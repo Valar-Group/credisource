@@ -6,6 +6,7 @@ from enum import Enum
 import uuid
 from datetime import datetime
 import os
+from celery import Celery
 
 app = FastAPI(
     title="CrediSource API",
@@ -20,6 +21,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Celery connection
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+celery_app = Celery('credisource', broker=REDIS_URL, backend=REDIS_URL)
 
 # Models
 class ContentType(str, Enum):
@@ -38,9 +43,6 @@ class JobStatus(BaseModel):
     status: str
     progress: Optional[int] = None
     result: Optional[Dict] = None
-
-# In-memory job storage (temporary - will use Redis later)
-jobs = {}
 
 @app.get("/")
 async def root():
@@ -65,15 +67,18 @@ async def verify_url(request: VerificationRequest):
     
     job_id = str(uuid.uuid4())
     
-    jobs[job_id] = JobStatus(
+    # Send job to Celery worker
+    celery_app.send_task(
+        'credisource.verify_content',
+        args=[job_id, str(request.url), request.content_type.value],
+        task_id=job_id
+    )
+    
+    return JobStatus(
         job_id=job_id,
         status="pending",
         progress=0
     )
-    
-    # TODO: Queue for worker processing
-    
-    return jobs[job_id]
 
 @app.post("/verify/upload", response_model=JobStatus)
 async def verify_upload(
@@ -83,29 +88,50 @@ async def verify_upload(
     """Verify uploaded file"""
     job_id = str(uuid.uuid4())
     
-    jobs[job_id] = JobStatus(
+    # Send job to worker
+    celery_app.send_task(
+        'credisource.verify_content',
+        args=[job_id, file.filename, content_type.value],
+        task_id=job_id
+    )
+    
+    return JobStatus(
         job_id=job_id,
         status="pending",
         progress=0
     )
-    
-    return jobs[job_id]
 
 @app.get("/job/{job_id}", response_model=JobStatus)
 async def get_job_status(job_id: str):
     """Get job status"""
-    if job_id not in jobs:
-        raise HTTPException(status_code=404, detail="Job not found")
+    # Get result from Celery
+    result = celery_app.AsyncResult(job_id)
     
-    return jobs[job_id]
+    if result.state == 'PENDING':
+        return JobStatus(job_id=job_id, status="pending", progress=0)
+    elif result.state == 'STARTED':
+        return JobStatus(job_id=job_id, status="processing", progress=50)
+    elif result.state == 'SUCCESS':
+        return JobStatus(
+            job_id=job_id,
+            status="completed",
+            progress=100,
+            result=result.result
+        )
+    elif result.state == 'FAILURE':
+        return JobStatus(
+            job_id=job_id,
+            status="failed",
+            progress=0,
+            result={"error": str(result.info)}
+        )
+    else:
+        return JobStatus(job_id=job_id, status=result.state.lower(), progress=0)
 
 @app.get("/stats")
 async def get_stats():
     """Get platform statistics"""
     return {
-        "total_jobs": len(jobs),
-        "by_status": {
-            "pending": sum(1 for j in jobs.values() if j.status == "pending"),
-            "completed": sum(1 for j in jobs.values() if j.status == "completed")
-        }
+        "status": "operational",
+        "worker_connected": True
     }
