@@ -55,88 +55,120 @@ def verify_content_task(job_id, url, content_type):
         }
 
 def detect_image_video(url):
-    """Detect AI in images using AI or Not"""
+    """Detect AI in images using AI or Not (with polling)"""
     
     if not AIORNOT_API_KEY:
         return create_mock_result(75, "No AI or Not API key configured")
     
     try:
-        print(f"🔍 Calling AI or Not API for: {url}")
+        print(f"🔍 Submitting image to AI or Not: {url}")
         
-        # Call AI or Not API with correct format
+        # Step 1: Submit the image for analysis
         with httpx.Client(timeout=60.0) as client:
-            response = client.post(
+            submit_response = client.post(
                 "https://api.aiornot.com/v1/reports/image",
                 headers={
                     "Authorization": f"Bearer {AIORNOT_API_KEY}",
                     "Content-Type": "application/json"
                 },
                 json={
-                    "object": url,
-                    "provider": "openai"  # May need this parameter
+                    "object": url
                 }
             )
             
-            print(f"📡 AI or Not status code: {response.status_code}")
-            print(f"📡 AI or Not response: {response.text}")
+            print(f"📡 Submit status: {submit_response.status_code}")
+            print(f"📡 Submit response: {submit_response.text}")
             
-            if response.status_code != 200:
-                error_msg = f"AI or Not API error {response.status_code}: {response.text}"
+            if submit_response.status_code not in [200, 201]:
+                error_msg = f"AI or Not submit error {submit_response.status_code}: {submit_response.text}"
                 print(f"⚠️ {error_msg}")
                 return create_mock_result(50, error_msg)
             
-            data = response.json()
-            print(f"📊 AI or Not full response: {data}")
+            submit_data = submit_response.json()
+            report_id = submit_data.get("id") or submit_data.get("report_id")
             
-            # Try different response formats
-            # Format 1: {"report": {"verdict": "ai", "confidence": 0.95}}
-            if "report" in data:
-                verdict = data["report"].get("verdict", "unknown")
-                confidence = data["report"].get("confidence", 0.5)
-            # Format 2: {"verdict": "ai", "confidence": 0.95}
-            elif "verdict" in data:
-                verdict = data.get("verdict", "unknown")
-                confidence = data.get("confidence", 0.5)
-            # Format 3: {"is_ai": true, "probability": 0.95}
-            elif "is_ai" in data:
-                verdict = "ai" if data["is_ai"] else "human"
-                confidence = data.get("probability", 0.5)
-            else:
-                print(f"⚠️ Unknown response format: {data}")
-                return create_mock_result(50, "Unknown AI or Not response format")
+            if not report_id:
+                print(f"⚠️ No report_id in response: {submit_data}")
+                return create_mock_result(50, "No report_id returned from AI or Not")
             
-            # Calculate trust score
-            if verdict.lower() in ["human", "real", "authentic"]:
-                trust_score = int(confidence * 100)
-            elif verdict.lower() in ["ai", "fake", "synthetic"]:
-                trust_score = int((1 - confidence) * 100)
-            else:
-                trust_score = 50
+            print(f"✅ Got report_id: {report_id}")
             
-            # Determine label
-            label = get_label(trust_score)
-            
-            return {
-                "trust_score": {
-                    "score": trust_score,
-                    "label": label,
-                    "confidence_band": [max(0, trust_score - 10), min(100, trust_score + 10)]
-                },
-                "evidence": [
-                    {
-                        "category": "AI Detection",
-                        "signal": f"Verdict: {verdict} ({int(confidence * 100)}% confidence) - AI or Not",
-                        "confidence": confidence,
-                        "details": {"provider": "aiornot", "verdict": verdict, "raw_confidence": confidence}
+            # Step 2: Poll for the result (max 30 seconds)
+            import time
+            max_attempts = 15
+            for attempt in range(max_attempts):
+                print(f"🔄 Polling attempt {attempt + 1}/{max_attempts}")
+                
+                time.sleep(2)  # Wait 2 seconds between polls
+                
+                result_response = client.get(
+                    f"https://api.aiornot.com/v1/reports/{report_id}",
+                    headers={
+                        "Authorization": f"Bearer {AIORNOT_API_KEY}"
                     }
-                ],
-                "metadata": {
-                    "url": url,
-                    "provider": "AI or Not",
-                    "content_type": "image",
-                    "credits_used": True
-                }
-            }
+                )
+                
+                if result_response.status_code != 200:
+                    print(f"⚠️ Poll error {result_response.status_code}: {result_response.text}")
+                    continue
+                
+                result_data = result_response.json()
+                status = result_data.get("status")
+                
+                print(f"📊 Report status: {status}")
+                
+                if status == "done":
+                    print(f"✅ Analysis complete! Full response: {result_data}")
+                    
+                    # Extract the verdict
+                    report = result_data.get("report", {})
+                    verdict = report.get("verdict", "unknown")
+                    confidence = report.get("confidence", 0.5)
+                    
+                    # Calculate trust score
+                    if verdict.lower() in ["human", "real"]:
+                        trust_score = int(confidence * 100)
+                    elif verdict.lower() in ["ai", "fake"]:
+                        trust_score = int((1 - confidence) * 100)
+                    else:
+                        trust_score = 50
+                    
+                    label = get_label(trust_score)
+                    
+                    return {
+                        "trust_score": {
+                            "score": trust_score,
+                            "label": label,
+                            "confidence_band": [max(0, trust_score - 10), min(100, trust_score + 10)]
+                        },
+                        "evidence": [
+                            {
+                                "category": "AI Detection",
+                                "signal": f"Verdict: {verdict} ({int(confidence * 100)}% confidence) - AI or Not",
+                                "confidence": confidence,
+                                "details": {
+                                    "provider": "aiornot",
+                                    "verdict": verdict,
+                                    "confidence": confidence,
+                                    "report_id": report_id
+                                }
+                            }
+                        ],
+                        "metadata": {
+                            "url": url,
+                            "provider": "AI or Not",
+                            "content_type": "image",
+                            "report_id": report_id
+                        }
+                    }
+                
+                elif status in ["failed", "error"]:
+                    error_msg = f"AI or Not analysis failed: {result_data.get('error', 'Unknown error')}"
+                    print(f"❌ {error_msg}")
+                    return create_mock_result(50, error_msg)
+            
+            # If we get here, polling timed out
+            return create_mock_result(50, "AI or Not analysis timed out after 30 seconds")
             
     except Exception as e:
         error_msg = f"AI or Not detection error: {str(e)}"
