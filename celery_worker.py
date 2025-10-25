@@ -89,27 +89,25 @@ def detect_image_video(url):
             
             if not report_id:
                 print(f"⚠️ No report_id in response: {submit_data}")
-                return create_mock_result(50, "No report_id returned from AI or Not")
+                return create_mock_result(50, "No report_id returned")
             
             print(f"✅ Got report_id: {report_id}")
             
-            # Step 2: Poll for the result (max 30 seconds)
+            # Step 2: Poll for the result
             import time
             max_attempts = 15
             for attempt in range(max_attempts):
                 print(f"🔄 Polling attempt {attempt + 1}/{max_attempts}")
                 
-                time.sleep(2)  # Wait 2 seconds between polls
+                time.sleep(2)
                 
                 result_response = client.get(
                     f"https://api.aiornot.com/v1/reports/{report_id}",
-                    headers={
-                        "Authorization": f"Bearer {AIORNOT_API_KEY}"
-                    }
+                    headers={"Authorization": f"Bearer {AIORNOT_API_KEY}"}
                 )
                 
                 if result_response.status_code != 200:
-                    print(f"⚠️ Poll error {result_response.status_code}: {result_response.text}")
+                    print(f"⚠️ Poll error: {result_response.text}")
                     continue
                 
                 result_data = result_response.json()
@@ -118,7 +116,51 @@ def detect_image_video(url):
                 print(f"📊 Report status: {status}")
                 
                 if status == "done":
-                    print(f"✅ Analysis complete! Full response: {result_data}")
+                    print(f"✅ Complete! Result: {result_data}")
+                    
+                    report = result_data.get("report", {})
+                    verdict = report.get("verdict", "unknown")
+                    confidence = report.get("confidence", 0.5)
+                    
+                    if verdict.lower() in ["human", "real"]:
+                        trust_score = int(confidence * 100)
+                    elif verdict.lower() in ["ai", "fake"]:
+                        trust_score = int((1 - confidence) * 100)
+                    else:
+                        trust_score = 50
+                    
+                    label = get_label(trust_score)
+                    
+                    return {
+                        "trust_score": {
+                            "score": trust_score,
+                            "label": label,
+                            "confidence_band": [max(0, trust_score - 10), min(100, trust_score + 10)]
+                        },
+                        "evidence": [
+                            {
+                                "category": "AI Detection",
+                                "signal": f"Verdict: {verdict} ({int(confidence * 100)}% confidence)",
+                                "confidence": confidence,
+                                "details": {"provider": "aiornot", "verdict": verdict}
+                            }
+                        ],
+                        "metadata": {
+                            "url": url,
+                            "provider": "AI or Not"
+                        }
+                    }
+                
+                elif status in ["failed", "error"]:
+                    return create_mock_result(50, f"Analysis failed: {result_data}")
+            
+            return create_mock_result(50, "Timeout waiting for results")
+            
+    except Exception as e:
+        print(f"⚠️ Error: {str(e)}")
+        import traceback
+        print(traceback.format_exc())
+        return create_mock_result(50, str(e))
                     
                     # Extract the verdict
                     report = result_data.get("report", {})
