@@ -61,8 +61,10 @@ def detect_image_video(url):
         return create_mock_result(75, "No AI or Not API key configured")
     
     try:
-        # Call AI or Not API
-        with httpx.Client(timeout=30.0) as client:
+        print(f"🔍 Calling AI or Not API for: {url}")
+        
+        # Call AI or Not API with correct format
+        with httpx.Client(timeout=60.0) as client:
             response = client.post(
                 "https://api.aiornot.com/v1/reports/image",
                 headers={
@@ -70,9 +72,13 @@ def detect_image_video(url):
                     "Content-Type": "application/json"
                 },
                 json={
-                    "object": url
+                    "object": url,
+                    "provider": "openai"  # May need this parameter
                 }
             )
+            
+            print(f"📡 AI or Not status code: {response.status_code}")
+            print(f"📡 AI or Not response: {response.text}")
             
             if response.status_code != 200:
                 error_msg = f"AI or Not API error {response.status_code}: {response.text}"
@@ -80,16 +86,29 @@ def detect_image_video(url):
                 return create_mock_result(50, error_msg)
             
             data = response.json()
-            print(f"📊 AI or Not response: {data}")
+            print(f"📊 AI or Not full response: {data}")
             
-            # Extract verdict from response
-            verdict = data.get("report", {}).get("verdict", "unknown")
-            confidence = data.get("report", {}).get("confidence", 0.5)
+            # Try different response formats
+            # Format 1: {"report": {"verdict": "ai", "confidence": 0.95}}
+            if "report" in data:
+                verdict = data["report"].get("verdict", "unknown")
+                confidence = data["report"].get("confidence", 0.5)
+            # Format 2: {"verdict": "ai", "confidence": 0.95}
+            elif "verdict" in data:
+                verdict = data.get("verdict", "unknown")
+                confidence = data.get("confidence", 0.5)
+            # Format 3: {"is_ai": true, "probability": 0.95}
+            elif "is_ai" in data:
+                verdict = "ai" if data["is_ai"] else "human"
+                confidence = data.get("probability", 0.5)
+            else:
+                print(f"⚠️ Unknown response format: {data}")
+                return create_mock_result(50, "Unknown AI or Not response format")
             
             # Calculate trust score
-            if verdict == "human":
+            if verdict.lower() in ["human", "real", "authentic"]:
                 trust_score = int(confidence * 100)
-            elif verdict == "ai":
+            elif verdict.lower() in ["ai", "fake", "synthetic"]:
                 trust_score = int((1 - confidence) * 100)
             else:
                 trust_score = 50
@@ -114,13 +133,16 @@ def detect_image_video(url):
                 "metadata": {
                     "url": url,
                     "provider": "AI or Not",
-                    "content_type": "image"
+                    "content_type": "image",
+                    "credits_used": True
                 }
             }
             
     except Exception as e:
         error_msg = f"AI or Not detection error: {str(e)}"
         print(f"⚠️ {error_msg}")
+        import traceback
+        print(f"Full traceback: {traceback.format_exc()}")
         return create_mock_result(50, error_msg)
             
     
