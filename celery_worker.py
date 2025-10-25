@@ -20,7 +20,7 @@ app.conf.update(
 )
 
 # API Keys from environment
-HIVE_API_KEY = os.getenv("HIVE_API_KEY")
+AIORNOT_API_KEY = os.getenv("AIORNOT_API_KEY")
 SAPLING_API_KEY = os.getenv("SAPLING_API_KEY")
 GOOGLE_API_KEY = os.getenv("GOOGLE_SEARCH_API_KEY")
 
@@ -55,34 +55,44 @@ def verify_content_task(job_id, url, content_type):
         }
 
 def detect_image_video(url):
-    """Detect AI in images/videos using Hive AI"""
+    """Detect AI in images using AI or Not"""
     
-    if not HIVE_API_KEY:
-        return create_mock_result(75, "No Hive API key configured")
+    if not AIORNOT_API_KEY:
+        return create_mock_result(75, "No AI or Not API key configured")
     
     try:
-        # Call Hive AI API
+        # Call AI or Not API
         with httpx.Client(timeout=30.0) as client:
             response = client.post(
-                "https://api.thehive.ai/api/v2/task/sync",
+                "https://api.aiornot.com/v1/reports/image",
                 headers={
-                    "Authorization": f"Token {HIVE_API_KEY}",
-                    "Accept": "application/json"
+                    "Authorization": f"Bearer {AIORNOT_API_KEY}",
+                    "Content-Type": "application/json"
                 },
-                files={"media": ("image.jpg", httpx.get(url).content)}
+                json={
+                    "object": url
+                }
             )
             
             if response.status_code != 200:
-                print(f"⚠️ Hive API error: {response.status_code}")
-                return create_mock_result(50, f"API Error: {response.status_code}")
+                error_msg = f"AI or Not API error {response.status_code}: {response.text}"
+                print(f"⚠️ {error_msg}")
+                return create_mock_result(50, error_msg)
             
             data = response.json()
+            print(f"📊 AI or Not response: {data}")
             
-            # Extract AI probability from Hive response
-            ai_score = extract_hive_score(data)
+            # Extract verdict from response
+            verdict = data.get("report", {}).get("verdict", "unknown")
+            confidence = data.get("report", {}).get("confidence", 0.5)
             
-            # Calculate trust score (inverse of AI probability)
-            trust_score = int((1 - ai_score) * 100)
+            # Calculate trust score
+            if verdict == "human":
+                trust_score = int(confidence * 100)
+            elif verdict == "ai":
+                trust_score = int((1 - confidence) * 100)
+            else:
+                trust_score = 50
             
             # Determine label
             label = get_label(trust_score)
@@ -96,17 +106,22 @@ def detect_image_video(url):
                 "evidence": [
                     {
                         "category": "AI Detection",
-                        "signal": f"{int(ai_score * 100)}% AI probability detected (Hive AI)",
-                        "confidence": 0.85,
-                        "details": {"provider": "hive", "raw_score": ai_score}
+                        "signal": f"Verdict: {verdict} ({int(confidence * 100)}% confidence) - AI or Not",
+                        "confidence": confidence,
+                        "details": {"provider": "aiornot", "verdict": verdict, "raw_confidence": confidence}
                     }
                 ],
                 "metadata": {
                     "url": url,
-                    "provider": "Hive AI",
-                    "content_type": "image/video"
+                    "provider": "AI or Not",
+                    "content_type": "image"
                 }
             }
+            
+    except Exception as e:
+        error_msg = f"AI or Not detection error: {str(e)}"
+        print(f"⚠️ {error_msg}")
+        return create_mock_result(50, error_msg)
             
     except Exception as e:
         print(f"⚠️ Hive detection error: {str(e)}")
@@ -163,22 +178,6 @@ def detect_text(text_content):
         print(f"⚠️ Sapling detection error: {str(e)}")
         return create_mock_result(50, f"Detection error: {str(e)}")
 
-def extract_hive_score(hive_response):
-    """Extract AI probability from Hive API response"""
-    try:
-        classes = hive_response.get('status', [{}])[0].get('response', {}).get('output', [{}])[0].get('classes', [])
-        
-        # Look for AI-generated class
-        for cls in classes:
-            if 'ai_generated' in cls.get('class', '').lower() or 'generated' in cls.get('class', '').lower():
-                return cls.get('score', 0.5)
-        
-        # Default if not found
-        return 0.5
-        
-    except Exception as e:
-        print(f"⚠️ Error parsing Hive response: {e}")
-        return 0.5
 
 def get_label(score):
     """Convert score to human-readable label"""
