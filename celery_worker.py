@@ -123,10 +123,7 @@ def detect_image_video(url):
         print(f"⚠️ {error_msg}")
         return create_mock_result(50, error_msg)
             
-    except Exception as e:
-        print(f"⚠️ Hive detection error: {str(e)}")
-        return create_mock_result(50, f"Detection error: {str(e)}")
-
+    
 def detect_text(text_content):
     """Detect AI in text using Sapling AI"""
     
