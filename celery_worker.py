@@ -1,9 +1,7 @@
 from celery import Celery
 import os
 import httpx
-import time
 import traceback
-import json
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 
@@ -57,184 +55,122 @@ def verify_content_task(job_id, url, content_type):
         }
 
 def detect_image_video(url):
-    """Detect AI in images using AI or Not (with polling) - DIAGNOSTIC VERSION"""
+    """Detect AI in images using AI or Not v2 SYNC API (no polling needed!)"""
     
     if not AIORNOT_API_KEY:
         print("⚠️ No AIORNOT_API_KEY found")
         return create_mock_result(75, "No AI or Not API key configured")
     
     try:
-        print(f"🔍 Submitting image to AI or Not: {url}")
-        print(f"🔑 API Key (first 10 chars): {AIORNOT_API_KEY[:10]}...")
+        print(f"🔍 Analyzing image with AI or Not v2: {url}")
         
-        # Step 1: Submit the image for analysis
-        with httpx.Client(timeout=60.0) as client:
-            submit_response = client.post(
-                "https://api.aiornot.com/v1/reports/image",
-                headers={
-                    "Authorization": f"Bearer {AIORNOT_API_KEY}",
-                    "Content-Type": "application/json"
-                },
-                json={
-                    "object": url
-                }
-            )
+        # Use v2 sync API - returns results immediately!
+        with httpx.Client(timeout=90.0) as client:
+            # Download the image first
+            print(f"📥 Downloading image from URL...")
+            image_response = client.get(url)
             
-            print(f"📡 Submit status: {submit_response.status_code}")
-            print(f"📡 Submit response headers: {dict(submit_response.headers)}")
-            print(f"📡 Submit response body: {submit_response.text}")
-            
-            if submit_response.status_code not in [200, 201]:
-                error_msg = f"AI or Not submit error {submit_response.status_code}: {submit_response.text}"
+            if image_response.status_code != 200:
+                error_msg = f"Failed to download image: {image_response.status_code}"
                 print(f"⚠️ {error_msg}")
                 return create_mock_result(50, error_msg)
             
-            # Try to parse JSON
-            try:
-                submit_data = submit_response.json()
-                print(f"📋 Parsed submit data: {json.dumps(submit_data, indent=2)}")
-            except Exception as json_error:
-                print(f"❌ Failed to parse JSON: {json_error}")
-                return create_mock_result(50, f"Invalid JSON response: {submit_response.text}")
+            image_data = image_response.content
+            print(f"✅ Downloaded {len(image_data)} bytes")
             
-            # Look for report_id in multiple possible locations
-            report_id = (
-                submit_data.get("id") or 
-                submit_data.get("report_id") or 
-                submit_data.get("reportId") or
-                submit_data.get("data", {}).get("id")
+            # Submit to AI or Not v2 sync endpoint
+            print(f"🔍 Submitting to AI or Not v2 sync API...")
+            response = client.post(
+                "https://api.aiornot.com/v2/image/sync",
+                headers={
+                    "Authorization": f"Bearer {AIORNOT_API_KEY}"
+                },
+                files={
+                    "image": ("image.jpg", image_data, "image/jpeg")
+                }
             )
             
-            if not report_id:
-                print(f"⚠️ No report_id found in response!")
-                print(f"Available keys: {list(submit_data.keys())}")
-                return create_mock_result(50, f"No report_id returned. Response keys: {list(submit_data.keys())}")
+            print(f"📡 Response status: {response.status_code}")
             
-            print(f"✅ Got report_id: {report_id}")
+            if response.status_code != 200:
+                error_msg = f"AI or Not API error {response.status_code}: {response.text}"
+                print(f"⚠️ {error_msg}")
+                return create_mock_result(50, error_msg)
             
-            # Step 2: Poll for the result
-            max_attempts = 20  # Increased from 15
-            poll_delay = 3     # Increased from 2 seconds
+            # Parse the response
+            data = response.json()
+            print(f"✅ Got response: {data.get('id')}")
             
-            for attempt in range(max_attempts):
-                print(f"🔄 Polling attempt {attempt + 1}/{max_attempts} (waiting {poll_delay}s between polls)")
-                
-                time.sleep(poll_delay)
-                
-                result_response = client.get(
-                    f"https://api.aiornot.com/v1/reports/{report_id}",
-                    headers={"Authorization": f"Bearer {AIORNOT_API_KEY}"}
-                )
-                
-                print(f"📊 Poll status: {result_response.status_code}")
-                
-                if result_response.status_code != 200:
-                    print(f"⚠️ Poll error status {result_response.status_code}: {result_response.text}")
-                    continue
-                
-                try:
-                    result_data = result_response.json()
-                    print(f"📋 Poll response: {json.dumps(result_data, indent=2)}")
-                except Exception as json_error:
-                    print(f"❌ Failed to parse poll JSON: {json_error}")
-                    continue
-                
-                # Check status - try multiple possible field names
-                status = (
-                    result_data.get("status") or 
-                    result_data.get("state") or
-                    result_data.get("data", {}).get("status")
-                )
-                
-                print(f"📊 Report status: '{status}'")
-                
-                # Check if processing is done - multiple possible values
-                if status in ["done", "completed", "complete", "finished"]:
-                    print(f"✅ Analysis complete! Full result: {json.dumps(result_data, indent=2)}")
-                    
-                    # Extract the verdict - try multiple paths
-                    report = result_data.get("report", result_data.get("data", {}))
-                    
-                    verdict = (
-                        report.get("verdict") or 
-                        report.get("prediction") or
-                        report.get("label") or
-                        result_data.get("verdict") or
-                        "unknown"
-                    )
-                    
-                    confidence = (
-                        report.get("confidence") or
-                        report.get("score") or
-                        result_data.get("confidence") or
-                        0.5
-                    )
-                    
-                    # Convert confidence to float if it's a string percentage
-                    if isinstance(confidence, str):
-                        confidence = float(confidence.strip('%')) / 100 if '%' in confidence else float(confidence)
-                    
-                    print(f"🎯 Extracted - Verdict: {verdict}, Confidence: {confidence}")
-                    
-                    # Calculate trust score
-                    if str(verdict).lower() in ["human", "real", "authentic"]:
-                        trust_score = int(confidence * 100)
-                    elif str(verdict).lower() in ["ai", "fake", "synthetic", "generated"]:
-                        trust_score = int((1 - confidence) * 100)
-                    else:
-                        print(f"⚠️ Unknown verdict '{verdict}', defaulting to 50")
-                        trust_score = 50
-                    
-                    label = get_label(trust_score)
-                    
-                    print(f"📊 Final trust score: {trust_score} ({label})")
-                    
-                    return {
-                        "trust_score": {
-                            "score": trust_score,
-                            "label": label,
-                            "confidence_band": [max(0, trust_score - 10), min(100, trust_score + 10)]
-                        },
-                        "evidence": [
-                            {
-                                "category": "AI Detection",
-                                "signal": f"Verdict: {verdict} ({int(confidence * 100)}% confidence) - AI or Not",
-                                "confidence": float(confidence),
-                                "details": {
-                                    "provider": "aiornot",
-                                    "verdict": verdict,
-                                    "confidence": float(confidence),
-                                    "report_id": report_id
-                                }
-                            }
-                        ],
-                        "metadata": {
-                            "url": url,
-                            "provider": "AI or Not",
-                            "content_type": "image",
-                            "report_id": report_id
+            # Extract the AI detection results
+            report = data.get("report", {})
+            ai_generated = report.get("ai_generated", {})
+            
+            verdict = ai_generated.get("verdict", "unknown")
+            ai_info = ai_generated.get("ai", {})
+            human_info = ai_generated.get("human", {})
+            
+            ai_confidence = ai_info.get("confidence", 0.5)
+            ai_detected = ai_info.get("is_detected", False)
+            
+            print(f"🎯 Verdict: {verdict}, AI Confidence: {ai_confidence}, AI Detected: {ai_detected}")
+            
+            # Calculate trust score
+            if verdict.lower() in ["human", "real"]:
+                # If verdict is human, use human confidence
+                trust_score = int(human_info.get("confidence", 1 - ai_confidence) * 100)
+            elif verdict.lower() in ["ai", "fake", "synthetic"]:
+                # If verdict is AI, inverse of AI confidence
+                trust_score = int((1 - ai_confidence) * 100)
+            else:
+                # Inconclusive
+                trust_score = 50
+            
+            # Ensure score is in valid range
+            trust_score = max(0, min(100, trust_score))
+            
+            label = get_label(trust_score)
+            
+            print(f"📊 Final trust score: {trust_score} ({label})")
+            
+            # Get generator info if available
+            generator_info = ai_generated.get("generator", {})
+            top_generators = []
+            if generator_info:
+                # Get top 3 generators by confidence
+                sorted_gens = sorted(generator_info.items(), key=lambda x: x[1], reverse=True)[:3]
+                top_generators = [f"{gen}: {int(conf*100)}%" for gen, conf in sorted_gens if conf > 0.5]
+            
+            evidence_signal = f"Verdict: {verdict} ({int(ai_confidence * 100)}% AI confidence)"
+            if top_generators:
+                evidence_signal += f" - Possible generators: {', '.join(top_generators)}"
+            
+            return {
+                "trust_score": {
+                    "score": trust_score,
+                    "label": label,
+                    "confidence_band": [max(0, trust_score - 10), min(100, trust_score + 10)]
+                },
+                "evidence": [
+                    {
+                        "category": "AI Detection",
+                        "signal": evidence_signal,
+                        "confidence": float(ai_confidence),
+                        "details": {
+                            "provider": "aiornot",
+                            "verdict": verdict,
+                            "ai_confidence": float(ai_confidence),
+                            "ai_detected": ai_detected,
+                            "generators": generator_info
                         }
                     }
-                
-                elif status in ["failed", "error", "errored"]:
-                    error_details = result_data.get('error') or result_data.get('message') or 'Unknown error'
-                    error_msg = f"AI or Not analysis failed: {error_details}"
-                    print(f"❌ {error_msg}")
-                    return create_mock_result(50, error_msg)
-                
-                elif status in ["processing", "pending", "queued", "running"]:
-                    print(f"⏳ Still processing... (status: {status})")
-                    continue
-                
-                else:
-                    print(f"⚠️ Unknown status: '{status}'. Full response: {result_data}")
-                    # Continue polling for unknown statuses
-                    continue
-            
-            # If we get here, polling timed out
-            timeout_msg = f"AI or Not analysis timed out after {max_attempts * poll_delay} seconds"
-            print(f"⏰ {timeout_msg}")
-            return create_mock_result(50, timeout_msg)
+                ],
+                "metadata": {
+                    "url": url,
+                    "provider": "AI or Not v2",
+                    "content_type": "image",
+                    "report_id": data.get("id")
+                }
+            }
             
     except Exception as e:
         error_msg = f"AI or Not detection error: {str(e)}"
