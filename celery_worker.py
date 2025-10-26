@@ -56,6 +56,46 @@ def verify_content_task(job_id, url, content_type):
             "error": str(e)
         }
 
+@app.task(name='credisource.verify_content_file')
+def verify_content_file_task(job_id, file_base64, filename, content_type):
+    """Process verification job for uploaded files"""
+    
+    print(f"🔍 Processing uploaded file job {job_id}: {filename} (type: {content_type})")
+    
+    try:
+        import base64
+        
+        # Decode file from base64
+        file_data = base64.b64decode(file_base64)
+        print(f"📦 Decoded file: {len(file_data)} bytes")
+        
+        # Run detection based on content type
+        if content_type == 'image':
+            result = detect_image_video_from_data(file_data, filename)
+        elif content_type == 'video':
+            # Videos use the same detection as images (AIorNOT supports both)
+            print(f"🎬 Processing video file...")
+            result = detect_image_video_from_data(file_data, filename, is_video=True)
+        elif content_type == 'text':
+            # For text files, decode as string
+            text_content = file_data.decode('utf-8')
+            result = detect_text(text_content)
+        else:
+            result = {"error": "Unsupported content type"}
+        
+        print(f"✅ Completed file job {job_id}: Score {result.get('trust_score', {}).get('score', 'N/A')}")
+        return result
+        
+    except Exception as e:
+        print(f"❌ Error in file job {job_id}: {str(e)}")
+        import traceback
+        print(f"Traceback: {traceback.format_exc()}")
+        return {
+            "job_id": job_id,
+            "status": "failed",
+            "error": str(e)
+        }
+
 def reverse_image_search(url):
     """Use Google to find where this image appears online"""
     
@@ -200,6 +240,201 @@ def detect_with_huggingface(image_data):
     except Exception as e:
         print(f"⚠️ Hugging Face error: {str(e)}")
         return None
+
+
+def detect_image_video_from_data(image_data, filename="uploaded_file", is_video=False):
+    """Detect AI in images/videos using file data directly (no URL download needed)"""
+    
+    if not AIORNOT_API_KEY:
+        print("⚠️ No AIORNOT_API_KEY found")
+        return create_mock_result(75, "No AI or Not API key configured")
+    
+    try:
+        content_type_str = "video" if is_video else "image"
+        print(f"🔍 Analyzing uploaded {content_type_str}: {filename}")
+        print(f"📦 File size: {len(image_data)} bytes")
+        
+        if is_video:
+            print(f"⏱️ Note: Video processing may take 30-60 seconds...")
+        
+        # ===========================================
+        # ENSEMBLE DETECTION: Call multiple APIs
+        # ===========================================
+        
+        all_results = []
+        
+        # 1. Submit to AI or Not v2 sync endpoint
+        endpoint = "https://api.aiornot.com/v2/video/sync" if is_video else "https://api.aiornot.com/v2/image/sync"
+        print(f"🔍 Submitting to AI or Not v2 {content_type_str} API...")
+        
+        with httpx.Client(timeout=120.0) as client:  # Longer timeout for videos
+            response = client.post(
+                endpoint,
+                headers={
+                    "Authorization": f"Bearer {AIORNOT_API_KEY}"
+                },
+                files={
+                    content_type_str: (filename, image_data, f"{content_type_str}/jpeg")
+                }
+            )
+            
+            print(f"📡 Response status: {response.status_code}")
+            
+            if response.status_code != 200:
+                error_msg = f"AI or Not API error {response.status_code}: {response.text}"
+                print(f"⚠️ {error_msg}")
+                return create_mock_result(50, error_msg)
+            
+            # Parse the response
+            data = response.json()
+            print(f"✅ Got response: {data.get('id')}")
+            
+            # Extract the AI detection results
+            report = data.get("report", {})
+            ai_generated = report.get("ai_generated", {})
+            
+            verdict = ai_generated.get("verdict", "unknown")
+            ai_info = ai_generated.get("ai", {})
+            human_info = ai_generated.get("human", {})
+            
+            ai_confidence = ai_info.get("confidence", 0.5)
+            ai_detected = ai_info.get("is_detected", False)
+            
+            print(f"🎯 AIorNOT Verdict: {verdict}, AI Confidence: {ai_confidence}, AI Detected: {ai_detected}")
+            
+            # Store AIorNOT result
+            aiornot_result = {
+                "provider": "AIorNOT",
+                "verdict": verdict,
+                "ai_confidence": ai_confidence,
+                "human_confidence": human_info.get("confidence", 1 - ai_confidence),
+                "generators": ai_generated.get("generator", {}),
+                "report_id": data.get("id")
+            }
+            all_results.append(aiornot_result)
+            
+            # 2. Call Hugging Face SDXL detector (images only - not for videos)
+            if not is_video:
+                hf_result = detect_with_huggingface(image_data)
+                if hf_result:
+                    all_results.append({
+                        "provider": "Hugging Face SDXL",
+                        "verdict": hf_result["verdict"],
+                        "ai_confidence": hf_result["confidence"],
+                        "human_confidence": 1 - hf_result["confidence"]
+                    })
+                    print(f"🤗 HF Verdict: {hf_result['verdict']}, AI Confidence: {hf_result['confidence']}")
+            else:
+                print(f"⏭️ Skipping Hugging Face for video (not supported)")
+            
+            # Note: No Google Search for uploaded files (no URL to search for)
+            print(f"📊 Combining {len(all_results)} detection results (no provenance for uploaded files)...")
+            
+            # ===========================================
+            # ENSEMBLE SCORING: Combine all results
+            # ===========================================
+            
+            # Weighted average (you can adjust weights later)
+            total_ai_confidence = 0
+            total_weight = 0
+            
+            for result in all_results:
+                weight = 1.0  # Equal weight for now
+                total_ai_confidence += result["ai_confidence"] * weight
+                total_weight += weight
+            
+            # Combined AI confidence
+            combined_ai_confidence = total_ai_confidence / total_weight if total_weight > 0 else 0.5
+            
+            print(f"🎯 Combined AI Confidence: {combined_ai_confidence:.2%}")
+            
+            # Calculate trust score from combined confidence
+            base_score = 1 - combined_ai_confidence
+            amplified = amplify_confidence(base_score)
+            trust_score = int(amplified * 100)
+            
+            # Ensure score is in valid range
+            trust_score = max(0, min(100, trust_score))
+            
+            label_info = get_label_with_explanation(trust_score)
+            
+            print(f"📊 Final trust score: {trust_score} ({label_info['label']})")
+            
+            # Get generator info if available
+            generator_info = ai_generated.get("generator", {})
+            top_generators = []
+            if generator_info:
+                try:
+                    sorted_items = []
+                    for gen_name, gen_value in generator_info.items():
+                        if isinstance(gen_value, dict):
+                            confidence = gen_value.get("confidence", 0)
+                        else:
+                            confidence = float(gen_value) if gen_value else 0
+                        sorted_items.append((gen_name, confidence))
+                    
+                    sorted_items.sort(key=lambda x: x[1], reverse=True)
+                    top_generators = [f"{gen}: {int(conf*100)}%" for gen, conf in sorted_items[:3] if conf > 0.5]
+                except Exception as gen_error:
+                    print(f"⚠️ Error parsing generators: {gen_error}")
+                    top_generators = []
+            
+            # Build evidence from all results
+            evidence = []
+            
+            for result in all_results:
+                provider = result["provider"]
+                ai_conf = result["ai_confidence"]
+                verdict = result.get("verdict", "unknown")
+                
+                signal = f"{provider}: {verdict} ({int(ai_conf * 100)}% AI confidence)"
+                
+                if provider == "AIorNOT" and top_generators:
+                    signal += f" - Detected: {', '.join(top_generators)}"
+                
+                evidence.append({
+                    "category": f"AI Detection - {provider}",
+                    "signal": signal,
+                    "confidence": float(ai_conf),
+                    "details": result
+                })
+            
+            # Add combined result
+            evidence.insert(0, {
+                "category": "Combined Analysis",
+                "signal": f"Ensemble score from {len(all_results)} detectors: {int(combined_ai_confidence * 100)}% AI confidence",
+                "confidence": float(combined_ai_confidence),
+                "details": {
+                    "num_detectors": len(all_results),
+                    "combined_confidence": combined_ai_confidence
+                }
+            })
+            
+            return {
+                "trust_score": {
+                    "score": trust_score,
+                    "label": label_info["label"],
+                    "explanation": label_info["explanation"],
+                    "confidence": label_info["confidence"],
+                    "recommended_action": label_info["action"],
+                    "confidence_band": [max(0, trust_score - 10), min(100, trust_score + 10)]
+                },
+                "evidence": evidence,
+                "metadata": {
+                    "filename": filename,
+                    "provider": "AI or Not v2",
+                    "content_type": "image",
+                    "report_id": data.get("id"),
+                    "source": "file_upload"
+                }
+            }
+            
+    except Exception as e:
+        error_msg = f"AI or Not detection error: {str(e)}"
+        print(f"⚠️ {error_msg}")
+        import traceback
+        print(f"Full traceback: {traceback.format_exc()}")
+        return create_mock_result(50, error_msg)
 
 
 def detect_image_video(url):
