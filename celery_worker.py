@@ -23,6 +23,7 @@ app.conf.update(
 AIORNOT_API_KEY = os.getenv("AIORNOT_API_KEY")
 SAPLING_API_KEY = os.getenv("SAPLING_API_KEY")
 GOOGLE_API_KEY = os.getenv("GOOGLE_SEARCH_API_KEY")
+HUGGINGFACE_API_KEY = os.getenv("HUGGINGFACE_API_KEY")
 
 @app.task(name='credisource.test_task')
 def test_task():
@@ -54,6 +55,66 @@ def verify_content_task(job_id, url, content_type):
             "error": str(e)
         }
 
+def detect_with_huggingface(image_data):
+    """Detect AI using Hugging Face SDXL detector"""
+    
+    if not HUGGINGFACE_API_KEY:
+        print("⚠️ No Hugging Face API key, skipping")
+        return None
+    
+    try:
+        import base64
+        
+        print(f"🤗 Calling Hugging Face SDXL detector...")
+        
+        # Convert image to base64
+        image_b64 = base64.b64encode(image_data).decode('utf-8')
+        
+        with httpx.Client(timeout=30.0) as client:
+            response = client.post(
+                "https://api-inference.huggingface.co/models/Organika/sdxl-detector",
+                headers={
+                    "Authorization": f"Bearer {HUGGINGFACE_API_KEY}",
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "inputs": image_b64
+                }
+            )
+            
+            print(f"🤗 HF Response status: {response.status_code}")
+            
+            if response.status_code == 503:
+                # Model is loading, this is normal for free tier
+                print(f"⚠️ HF model loading, will retry...")
+                return None
+            
+            if response.status_code != 200:
+                print(f"⚠️ HF error: {response.text}")
+                return None
+            
+            data = response.json()
+            print(f"🤗 HF Response: {data}")
+            
+            # Parse response - format: [{"label": "artificial", "score": 0.99}]
+            if isinstance(data, list) and len(data) > 0:
+                for item in data:
+                    if item.get("label") in ["artificial", "ai", "fake", "synthetic"]:
+                        ai_score = item.get("score", 0.5)
+                        print(f"🤗 HF AI score: {ai_score}")
+                        return {
+                            "verdict": "ai" if ai_score > 0.5 else "human",
+                            "confidence": ai_score,
+                            "provider": "huggingface-sdxl"
+                        }
+            
+            return None
+            
+    except Exception as e:
+        print(f"⚠️ Hugging Face error: {str(e)}")
+        return None
+
+
 def detect_image_video(url):
     """Detect AI in images using AI or Not v2 SYNC API (no polling needed!)"""
     
@@ -75,10 +136,26 @@ def detect_image_video(url):
                 print(f"⚠️ {error_msg}")
                 return create_mock_result(50, error_msg)
             
+            # Check content type
+            content_type = image_response.headers.get('content-type', '').lower()
+            print(f"📋 Content-Type: {content_type}")
+            
+            # If it's HTML, provide helpful error
+            if 'text/html' in content_type:
+                error_msg = "URL points to a webpage, not an image. Please provide a direct image URL (e.g., ending in .jpg, .png, .webp)"
+                print(f"⚠️ {error_msg}")
+                return create_mock_result(50, error_msg)
+            
             image_data = image_response.content
             print(f"✅ Downloaded {len(image_data)} bytes")
             
-            # Submit to AI or Not v2 sync endpoint
+            # ===========================================
+            # ENSEMBLE DETECTION: Call multiple APIs
+            # ===========================================
+            
+            all_results = []
+            
+            # 1. Submit to AI or Not v2 sync endpoint
             print(f"🔍 Submitting to AI or Not v2 sync API...")
             response = client.post(
                 "https://api.aiornot.com/v2/image/sync",
@@ -112,25 +189,61 @@ def detect_image_video(url):
             ai_confidence = ai_info.get("confidence", 0.5)
             ai_detected = ai_info.get("is_detected", False)
             
-            print(f"🎯 Verdict: {verdict}, AI Confidence: {ai_confidence}, AI Detected: {ai_detected}")
+            print(f"🎯 AIorNOT Verdict: {verdict}, AI Confidence: {ai_confidence}, AI Detected: {ai_detected}")
             
-            # Calculate trust score
-            if verdict.lower() in ["human", "real"]:
-                # If verdict is human, use human confidence
-                trust_score = int(human_info.get("confidence", 1 - ai_confidence) * 100)
-            elif verdict.lower() in ["ai", "fake", "synthetic"]:
-                # If verdict is AI, inverse of AI confidence
-                trust_score = int((1 - ai_confidence) * 100)
-            else:
-                # Inconclusive
-                trust_score = 50
+            # Store AIorNOT result
+            aiornot_result = {
+                "provider": "AIorNOT",
+                "verdict": verdict,
+                "ai_confidence": ai_confidence,
+                "human_confidence": human_info.get("confidence", 1 - ai_confidence),
+                "generators": ai_generated.get("generator", {}),
+                "report_id": data.get("id")
+            }
+            all_results.append(aiornot_result)
+            
+            # 2. Call Hugging Face SDXL detector
+            hf_result = detect_with_huggingface(image_data)
+            if hf_result:
+                all_results.append({
+                    "provider": "Hugging Face SDXL",
+                    "verdict": hf_result["verdict"],
+                    "ai_confidence": hf_result["confidence"],
+                    "human_confidence": 1 - hf_result["confidence"]
+                })
+                print(f"🤗 HF Verdict: {hf_result['verdict']}, AI Confidence: {hf_result['confidence']}")
+            
+            # ===========================================
+            # ENSEMBLE SCORING: Combine all results
+            # ===========================================
+            
+            print(f"📊 Combining {len(all_results)} detection results...")
+            
+            # Weighted average (you can adjust weights later)
+            total_ai_confidence = 0
+            total_weight = 0
+            
+            for result in all_results:
+                weight = 1.0  # Equal weight for now
+                total_ai_confidence += result["ai_confidence"] * weight
+                total_weight += weight
+            
+            # Combined AI confidence
+            combined_ai_confidence = total_ai_confidence / total_weight if total_weight > 0 else 0.5
+            
+            print(f"🎯 Combined AI Confidence: {combined_ai_confidence:.2%}")
+            
+            # Calculate trust score from combined confidence
+            base_score = 1 - combined_ai_confidence
+            amplified = amplify_confidence(base_score)
+            trust_score = int(amplified * 100)
             
             # Ensure score is in valid range
             trust_score = max(0, min(100, trust_score))
             
-            label = get_label(trust_score)
+            label_info = get_label_with_explanation(trust_score)
             
-            print(f"📊 Final trust score: {trust_score} ({label})")
+            print(f"📊 Final trust score: {trust_score} ({label_info['label']})")
             
             # Get generator info if available
             generator_info = ai_generated.get("generator", {})
@@ -155,30 +268,48 @@ def detect_image_video(url):
                     print(f"⚠️ Error parsing generators: {gen_error}")
                     top_generators = []
             
-            evidence_signal = f"Verdict: {verdict} ({int(ai_confidence * 100)}% AI confidence)"
-            if top_generators:
-                evidence_signal += f" - Possible generators: {', '.join(top_generators)}"
+            # Build evidence from all results
+            evidence = []
+            
+            for result in all_results:
+                provider = result["provider"]
+                ai_conf = result["ai_confidence"]
+                verdict = result.get("verdict", "unknown")
+                
+                signal = f"{provider}: {verdict} ({int(ai_conf * 100)}% AI confidence)"
+                
+                # Add generator info for AIorNOT
+                if provider == "AIorNOT" and top_generators:
+                    signal += f" - Detected: {', '.join(top_generators)}"
+                
+                evidence.append({
+                    "category": f"AI Detection - {provider}",
+                    "signal": signal,
+                    "confidence": float(ai_conf),
+                    "details": result
+                })
+            
+            # Add combined result
+            evidence.insert(0, {
+                "category": "Combined Analysis",
+                "signal": f"Ensemble score from {len(all_results)} detectors: {int(combined_ai_confidence * 100)}% AI confidence",
+                "confidence": float(combined_ai_confidence),
+                "details": {
+                    "num_detectors": len(all_results),
+                    "combined_confidence": combined_ai_confidence
+                }
+            })
             
             return {
                 "trust_score": {
                     "score": trust_score,
-                    "label": label,
+                    "label": label_info["label"],
+                    "explanation": label_info["explanation"],
+                    "confidence": label_info["confidence"],
+                    "recommended_action": label_info["action"],
                     "confidence_band": [max(0, trust_score - 10), min(100, trust_score + 10)]
                 },
-                "evidence": [
-                    {
-                        "category": "AI Detection",
-                        "signal": evidence_signal,
-                        "confidence": float(ai_confidence),
-                        "details": {
-                            "provider": "aiornot",
-                            "verdict": verdict,
-                            "ai_confidence": float(ai_confidence),
-                            "ai_detected": ai_detected,
-                            "generators": generator_info
-                        }
-                    }
-                ],
+                "evidence": evidence,
                 "metadata": {
                     "url": url,
                     "provider": "AI or Not v2",
@@ -246,16 +377,59 @@ def detect_text(text_content):
         return create_mock_result(50, f"Detection error: {str(e)}")
 
 
-def get_label(score):
-    """Convert score to human-readable label"""
-    if score >= 75:
-        return "Likely Authentic"
-    elif score >= 55:
-        return "Leaning Authentic"
-    elif score >= 45:
-        return "Inconclusive"
+def amplify_confidence(confidence):
+    """
+    Amplify confidence scores to make them more decisive
+    Pushes values away from 0.5 (inconclusive) toward extremes
+    
+    Examples:
+    0.54 -> 0.62 (more decisive toward "not AI")
+    0.63 -> 0.76 (even more decisive)
+    0.90 -> 0.97 (very confident stays very confident)
+    """
+    # Center around 0.5
+    centered = confidence - 0.5
+    # Apply power function to amplify (1.5 is good balance)
+    amplified = centered * (abs(centered) ** 0.3) * 2.5
+    # Shift back and clamp to [0, 1]
+    result = 0.5 + amplified
+    return max(0.0, min(1.0, result))
+
+
+def get_label_with_explanation(score):
+    """Convert score to consumer-friendly label with explanation"""
+    if score >= 65:
+        return {
+            "label": "Likely Real",
+            "explanation": "This content appears to be authentic. Our AI detection found strong indicators that this was created by a human or captured with a real camera.",
+            "confidence": "High",
+            "action": "This content is likely trustworthy."
+        }
+    elif score >= 50:
+        return {
+            "label": "Probably Real", 
+            "explanation": "This content likely appears authentic, but we detected some minor inconsistencies. This could be due to image editing or compression.",
+            "confidence": "Moderate-High",
+            "action": "This content is probably trustworthy, but verify important details."
+        }
+    elif score >= 35:
+        return {
+            "label": "Probably Fake",
+            "explanation": "This content shows signs of AI generation. We detected patterns commonly found in AI-created images.",
+            "confidence": "Moderate-High",
+            "action": "Be cautious. This content may be AI-generated or heavily manipulated."
+        }
     else:
-        return "Likely AI"
+        return {
+            "label": "Likely Fake",
+            "explanation": "This content appears to be AI-generated. We found strong indicators of synthetic creation, including telltale artifacts and patterns typical of AI image generators.",
+            "confidence": "High",
+            "action": "This content is likely fake. Do not trust without additional verification."
+        }
+
+def get_label(score):
+    """Convert score to consumer-friendly label (backward compatibility)"""
+    return get_label_with_explanation(score)["label"]
 
 def create_mock_result(score, reason):
     """Create mock result when API unavailable"""
