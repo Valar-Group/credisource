@@ -23,6 +23,7 @@ app.conf.update(
 AIORNOT_API_KEY = os.getenv("AIORNOT_API_KEY")
 SAPLING_API_KEY = os.getenv("SAPLING_API_KEY")
 GOOGLE_API_KEY = os.getenv("GOOGLE_SEARCH_API_KEY")
+GOOGLE_SEARCH_ENGINE_ID = os.getenv("GOOGLE_SEARCH_ENGINE_ID")
 HUGGINGFACE_API_KEY = os.getenv("HUGGINGFACE_API_KEY")
 
 @app.task(name='credisource.test_task')
@@ -54,6 +55,85 @@ def verify_content_task(job_id, url, content_type):
             "status": "failed",
             "error": str(e)
         }
+
+def reverse_image_search(url):
+    """Use Google to find where this image appears online"""
+    
+    if not GOOGLE_API_KEY or not GOOGLE_SEARCH_ENGINE_ID:
+        print("⚠️ Google Search not configured, skipping")
+        return None
+    
+    try:
+        print(f"🔍 Running Google Reverse Image Search...")
+        
+        with httpx.Client(timeout=30.0) as client:
+            # Use Google Custom Search API with image search
+            response = client.get(
+                "https://www.googleapis.com/customsearch/v1",
+                params={
+                    "key": GOOGLE_API_KEY,
+                    "cx": GOOGLE_SEARCH_ENGINE_ID,
+                    "q": url,
+                    "searchType": "image",
+                    "num": 10  # Get top 10 results
+                }
+            )
+            
+            print(f"🔍 Google response status: {response.status_code}")
+            
+            if response.status_code != 200:
+                print(f"⚠️ Google Search error: {response.text}")
+                return None
+            
+            data = response.json()
+            items = data.get("items", [])
+            
+            if not items:
+                print(f"📭 No results found")
+                return {
+                    "found": False,
+                    "num_results": 0
+                }
+            
+            print(f"✅ Found {len(items)} similar images")
+            
+            # Analyze the results
+            domains = []
+            suspicious_keywords = ["ai", "midjourney", "dalle", "stable-diffusion", "generated", "synthetic", "fake"]
+            suspicious_count = 0
+            
+            for item in items:
+                link = item.get("link", "")
+                title = item.get("title", "").lower()
+                snippet = item.get("snippet", "").lower()
+                
+                # Extract domain
+                from urllib.parse import urlparse
+                domain = urlparse(link).netloc
+                domains.append(domain)
+                
+                # Check for AI-related keywords
+                text = title + " " + snippet
+                if any(keyword in text for keyword in suspicious_keywords):
+                    suspicious_count += 1
+            
+            # Calculate suspicion score
+            suspicion_ratio = suspicious_count / len(items) if items else 0
+            
+            print(f"📊 Suspicious results: {suspicious_count}/{len(items)} ({int(suspicion_ratio*100)}%)")
+            
+            return {
+                "found": True,
+                "num_results": len(items),
+                "domains": list(set(domains))[:5],  # Top 5 unique domains
+                "suspicious_ratio": suspicion_ratio,
+                "suspicious_count": suspicious_count
+            }
+            
+    except Exception as e:
+        print(f"⚠️ Google Search error: {str(e)}")
+        return None
+
 
 def detect_with_huggingface(image_data):
     """Detect AI using Hugging Face SDXL detector"""
@@ -213,6 +293,39 @@ def detect_image_video(url):
                 })
                 print(f"🤗 HF Verdict: {hf_result['verdict']}, AI Confidence: {hf_result['confidence']}")
             
+            # 3. Run Google Reverse Image Search
+            google_result = reverse_image_search(url)
+            provenance_evidence = None
+            
+            if google_result and google_result.get("found"):
+                suspicious_ratio = google_result.get("suspicious_ratio", 0)
+                num_results = google_result.get("num_results", 0)
+                domains = google_result.get("domains", [])
+                
+                # Create provenance evidence
+                if suspicious_ratio > 0.5:
+                    signal = f"Found on {num_results} websites, {int(suspicious_ratio*100)}% contain AI-related keywords"
+                    verdict = "Suspicious provenance - appears on AI art sites"
+                elif num_results > 20:
+                    signal = f"Widely circulated - found on {num_results} websites"
+                    verdict = "Viral image"
+                else:
+                    signal = f"Found on {num_results} websites: {', '.join(domains[:3])}"
+                    verdict = "Limited circulation"
+                
+                provenance_evidence = {
+                    "category": "Provenance - Google Search",
+                    "signal": signal,
+                    "confidence": 0.7,
+                    "details": {
+                        "num_results": num_results,
+                        "suspicious_ratio": suspicious_ratio,
+                        "domains": domains,
+                        "verdict": verdict
+                    }
+                }
+                print(f"🔍 Google: {verdict}")
+            
             # ===========================================
             # ENSEMBLE SCORING: Combine all results
             # ===========================================
@@ -299,6 +412,10 @@ def detect_image_video(url):
                     "combined_confidence": combined_ai_confidence
                 }
             })
+            
+            # Add provenance evidence if available
+            if provenance_evidence:
+                evidence.append(provenance_evidence)
             
             return {
                 "trust_score": {
