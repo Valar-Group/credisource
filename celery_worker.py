@@ -64,17 +64,25 @@ def reverse_image_search(url):
         return None
     
     try:
-        print(f"🔍 Running Google Reverse Image Search...")
+        print(f"🔍 Running Google Search for image context...")
+        
+        # Extract filename and domain from URL for better search
+        from urllib.parse import urlparse
+        parsed = urlparse(url)
+        filename = parsed.path.split('/')[-1]
+        domain = parsed.netloc
+        
+        # Search for the image URL and filename
+        search_query = f'"{url}" OR "{filename}"'
         
         with httpx.Client(timeout=30.0) as client:
-            # Use Google Custom Search API with image search
+            # Use Google Custom Search API
             response = client.get(
                 "https://www.googleapis.com/customsearch/v1",
                 params={
                     "key": GOOGLE_API_KEY,
                     "cx": GOOGLE_SEARCH_ENGINE_ID,
-                    "q": url,
-                    "searchType": "image",
+                    "q": search_query,
                     "num": 10  # Get top 10 results
                 }
             )
@@ -95,11 +103,11 @@ def reverse_image_search(url):
                     "num_results": 0
                 }
             
-            print(f"✅ Found {len(items)} similar images")
+            print(f"✅ Found {len(items)} results mentioning this image")
             
             # Analyze the results
             domains = []
-            suspicious_keywords = ["ai", "midjourney", "dalle", "stable-diffusion", "generated", "synthetic", "fake"]
+            suspicious_keywords = ["ai", "midjourney", "dalle", "stable-diffusion", "generated", "synthetic", "fake", "artificial"]
             suspicious_count = 0
             
             for item in items:
@@ -108,9 +116,8 @@ def reverse_image_search(url):
                 snippet = item.get("snippet", "").lower()
                 
                 # Extract domain
-                from urllib.parse import urlparse
-                domain = urlparse(link).netloc
-                domains.append(domain)
+                item_domain = urlparse(link).netloc
+                domains.append(item_domain)
                 
                 # Check for AI-related keywords
                 text = title + " " + snippet
