@@ -137,8 +137,23 @@ def detect_image_video(url):
             top_generators = []
             if generator_info:
                 # Get top 3 generators by confidence
-                sorted_gens = sorted(generator_info.items(), key=lambda x: x[1], reverse=True)[:3]
-                top_generators = [f"{gen}: {int(conf*100)}%" for gen, conf in sorted_gens if conf > 0.5]
+                # Handle both dict and float values
+                try:
+                    sorted_items = []
+                    for gen_name, gen_value in generator_info.items():
+                        # Extract confidence - might be a dict or a float
+                        if isinstance(gen_value, dict):
+                            confidence = gen_value.get("confidence", 0)
+                        else:
+                            confidence = float(gen_value) if gen_value else 0
+                        sorted_items.append((gen_name, confidence))
+                    
+                    # Sort by confidence and take top 3
+                    sorted_items.sort(key=lambda x: x[1], reverse=True)
+                    top_generators = [f"{gen}: {int(conf*100)}%" for gen, conf in sorted_items[:3] if conf > 0.5]
+                except Exception as gen_error:
+                    print(f"⚠️ Error parsing generators: {gen_error}")
+                    top_generators = []
             
             evidence_signal = f"Verdict: {verdict} ({int(ai_confidence * 100)}% AI confidence)"
             if top_generators:
