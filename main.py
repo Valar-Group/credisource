@@ -49,6 +49,8 @@ def read_root():
         "version": "1.0.0",
         "endpoints": {
             "verify_url": "POST /verify/url",
+            "verify_image": "POST /verify/image",
+            "verify_video": "POST /verify/video",
             "verify_file": "POST /verify/file",
             "verify_text": "POST /verify/text",
             "job_status": "GET /job/{job_id}",
@@ -81,6 +83,26 @@ async def verify_url(request: VerifyURLRequest):
         "status": "queued",
         "message": f"Verification job queued. Check status at /job/{job_id}"
     }
+
+# NEW: Image Verification Endpoint (convenience endpoint for frontend)
+@app.post("/verify/image", response_model=JobResponse)
+async def verify_image(request: VerifyURLRequest):
+    """
+    Verify image from URL (convenience endpoint)
+    Accepts URL and automatically sets content_type to 'image'
+    """
+    request.content_type = "image"
+    return await verify_url(request)
+
+# NEW: Video Verification Endpoint (convenience endpoint for frontend)
+@app.post("/verify/video", response_model=JobResponse)
+async def verify_video(request: VerifyURLRequest):
+    """
+    Verify video from URL (convenience endpoint)
+    Accepts URL and automatically sets content_type to 'video'
+    """
+    request.content_type = "video"
+    return await verify_url(request)
 
 # Text Verification Endpoint (for pasted text)
 @app.post("/verify/text", response_model=JobResponse)
@@ -118,7 +140,7 @@ async def verify_text(request: VerifyTextRequest):
         "message": f"Text verification queued. Check status at /job/{job_id}"
     }
 
-# NEW: File Upload Endpoint
+# File Upload Endpoint
 @app.post("/verify/file", response_model=JobResponse)
 async def verify_file(
     file: UploadFile = File(...),
