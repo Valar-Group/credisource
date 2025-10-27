@@ -2,6 +2,9 @@ from celery import Celery
 import os
 import httpx
 import traceback
+import tempfile
+import subprocess
+import json
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 
@@ -376,13 +379,144 @@ def detect_image_video_from_data(file_data, filename, is_video=False):
         return create_mock_result(50, error_msg)
 
 
+def download_video_with_ytdlp(url, job_id=None):
+    """
+    Download video from social media platforms using yt-dlp
+    Supports: YouTube, TikTok, Twitter/X, Instagram, Facebook, etc.
+    
+    Returns: (video_file_path, error_message)
+    """
+    
+    print(f"📥 Attempting to download video from: {url}")
+    
+    # Create temp directory for downloads
+    temp_dir = tempfile.mkdtemp(prefix="credisource_video_")
+    output_template = os.path.join(temp_dir, "video.%(ext)s")
+    
+    try:
+        # yt-dlp command to download video
+        cmd = [
+            "yt-dlp",
+            "--no-playlist",  # Don't download playlists
+            "--format", "best[ext=mp4]/best",  # Prefer MP4
+            "--output", output_template,
+            "--no-check-certificate",  # Some sites have cert issues
+            "--quiet",  # Reduce output
+            "--no-warnings",
+            url
+        ]
+        
+        print(f"🎬 Downloading video with yt-dlp...")
+        
+        # Run yt-dlp
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=120  # 2 minute timeout
+        )
+        
+        if result.returncode != 0:
+            error_msg = result.stderr or "Unknown error"
+            print(f"❌ yt-dlp failed: {error_msg}")
+            
+            # Clean up temp dir
+            try:
+                import shutil
+                shutil.rmtree(temp_dir)
+            except:
+                pass
+                
+            return None, f"Failed to download video: {error_msg}"
+        
+        # Find the downloaded video file
+        video_files = [f for f in os.listdir(temp_dir) if f.startswith("video.")]
+        
+        if not video_files:
+            print(f"❌ No video file found after download")
+            return None, "Video download succeeded but file not found"
+        
+        video_path = os.path.join(temp_dir, video_files[0])
+        file_size = os.path.getsize(video_path)
+        
+        print(f"✅ Video downloaded successfully!")
+        print(f"📦 File: {video_path}")
+        print(f"📊 Size: {file_size / 1024 / 1024:.2f} MB")
+        
+        return video_path, None
+        
+    except subprocess.TimeoutExpired:
+        print(f"❌ Download timed out after 2 minutes")
+        try:
+            import shutil
+            shutil.rmtree(temp_dir)
+        except:
+            pass
+        return None, "Video download timed out (2 minute limit)"
+        
+    except Exception as e:
+        print(f"❌ Unexpected error downloading video: {str(e)}")
+        print(f"Traceback: {traceback.format_exc()}")
+        try:
+            import shutil
+            shutil.rmtree(temp_dir)
+        except:
+            pass
+        return None, f"Error: {str(e)}"
+
+
 def detect_image_video(url):
     """Detect AI in image/video from URL using AIorNOT with ensemble scoring"""
     
     if not AIORNOT_API_KEY:
         return create_mock_result(50, "No AIorNOT API key configured")
     
+    # Detect if this is a social media video URL that needs downloading
+    video_platforms = [
+        'youtube.com', 'youtu.be',
+        'tiktok.com',
+        'twitter.com', 'x.com',
+        'instagram.com',
+        'facebook.com', 'fb.watch',
+        'reddit.com',
+        'vimeo.com',
+        'dailymotion.com'
+    ]
+    
+    is_social_video = any(platform in url.lower() for platform in video_platforms)
+    video_file_path = None
+    
     try:
+        # If it's a social media video, download it first
+        if is_social_video:
+            print(f"🎥 Detected social media video URL, downloading...")
+            video_file_path, error = download_video_with_ytdlp(url)
+            
+            if error:
+                print(f"❌ Could not download video: {error}")
+                return create_mock_result(50, f"Video download failed: {error}")
+            
+            print(f"✅ Video downloaded, uploading to AIorNOT...")
+            
+            # Upload the downloaded video file to AIorNOT
+            with open(video_file_path, 'rb') as video_file:
+                video_data = video_file.read()
+            
+            # Use the file upload method
+            result = detect_image_video_from_data(video_data, "video.mp4", is_video=True)
+            
+            # Clean up downloaded file
+            try:
+                import shutil
+                temp_dir = os.path.dirname(video_file_path)
+                shutil.rmtree(temp_dir)
+                print(f"🧹 Cleaned up temporary video file")
+            except Exception as e:
+                print(f"⚠️ Could not clean up temp file: {e}")
+            
+            return result
+        
+        # Otherwise, try direct URL (for direct video/image links)
         print(f"🔍 Calling AIorNOT for URL: {url}")
         
         with httpx.Client(timeout=60.0) as client:
