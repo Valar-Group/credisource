@@ -607,51 +607,71 @@ def detect_text_winston(text_content):
             # Extract the actual detection result from content
             content = result.get("content", [])
             if content and len(content) > 0:
-                # Parse the text response which contains detection results in plain text
+                # Parse the text response which contains JSON as a string
                 text_result = content[0].get("text", "")
                 print(f"📊 Winston result text (first 500 chars): {text_result[:500]}")
                 
-                # Winston returns plain text like:
-                # "The AI detector Winston AI has detected the text as 17.89% human-written..."
-                
-                import re
-                
-                # Extract the human percentage from text
-                human_match = re.search(r'(\d+\.?\d*)%\s*human', text_result, re.IGNORECASE)
-                
-                if human_match:
-                    human_score = float(human_match.group(1))
-                    print(f"📊 Winston human score: {human_score}% (0=AI, 100=human)")
+                # Try to parse as JSON first (new format)
+                try:
+                    import json
+                    winston_data = json.loads(text_result)
                     
-                    # Convert to AI confidence (inverse of human score)
-                    # Winston: 0% human = 100% AI
-                    # Winston: 100% human = 0% AI
-                    ai_confidence = 1 - (human_score / 100)
+                    # Winston returns JSON with score field
+                    # score: 0-100 where 0 = 0% human (100% AI), 100 = 100% human (0% AI)
+                    overall_score = winston_data.get("score")
                     
-                    print(f"✅ Winston AI confidence: {ai_confidence:.2%}")
+                    if overall_score is not None:
+                        print(f"📊 Winston human score: {overall_score}% (0=AI, 100=human)")
+                        
+                        # Convert to AI confidence
+                        ai_confidence = 1 - (overall_score / 100)
+                        
+                        print(f"✅ Winston AI confidence: {ai_confidence:.2%}")
+                        
+                        # Get credits info
+                        credits_used = winston_data.get("credits_used")
+                        credits_remaining = winston_data.get("credits_remaining")
+                        
+                        if credits_remaining:
+                            print(f"💳 Credits remaining: {credits_remaining}")
+                        
+                        return {
+                            "provider": "Winston AI",
+                            "ai_confidence": ai_confidence,
+                            "verdict": "Human-written" if ai_confidence < 0.5 else "AI-generated",
+                            "raw_response": data,
+                            "winston_human_score": overall_score,
+                            "credits_used": credits_used,
+                            "credits_remaining": credits_remaining
+                        }
+                    else:
+                        print(f"⚠️ No score field in Winston JSON")
+                        return None
+                        
+                except json.JSONDecodeError:
+                    # Fall back to regex parsing for plain text format
+                    print(f"📝 Winston returned plain text, using regex parsing")
                     
-                    # Determine verdict
-                    is_human = ai_confidence < 0.5
+                    import re
+                    human_match = re.search(r'(\d+\.?\d*)%\s*human', text_result, re.IGNORECASE)
                     
-                    # Try to extract credits info if available in the full response
-                    credits_match = re.search(r'"credits_remaining":\s*(\d+)', str(data))
-                    credits_remaining = int(credits_match.group(1)) if credits_match else None
-                    
-                    result_data = {
-                        "provider": "Winston AI",
-                        "ai_confidence": ai_confidence,
-                        "verdict": "Human-written" if is_human else "AI-generated",
-                        "raw_response": data,
-                        "winston_human_score": human_score
-                    }
-                    
-                    if credits_remaining:
-                        result_data["credits_remaining"] = credits_remaining
-                    
-                    return result_data
-                else:
-                    print(f"⚠️ Could not extract human percentage from Winston response")
-                    return None
+                    if human_match:
+                        human_score = float(human_match.group(1))
+                        print(f"📊 Winston human score: {human_score}% (0=AI, 100=human)")
+                        
+                        ai_confidence = 1 - (human_score / 100)
+                        print(f"✅ Winston AI confidence: {ai_confidence:.2%}")
+                        
+                        return {
+                            "provider": "Winston AI",
+                            "ai_confidence": ai_confidence,
+                            "verdict": "Human-written" if ai_confidence < 0.5 else "AI-generated",
+                            "raw_response": data,
+                            "winston_human_score": human_score
+                        }
+                    else:
+                        print(f"⚠️ Could not extract human percentage from Winston response")
+                        return None
             else:
                 print(f"⚠️ Unexpected Winston response format")
                 return None
