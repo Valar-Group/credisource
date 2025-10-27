@@ -544,13 +544,13 @@ def detect_image_video(url):
 
 
 # ============================================================
-# TEXT DETECTION - UPDATED TO USE HUGGING FACE
+# TEXT DETECTION - ENSEMBLE WITH 2 FREE HUGGING FACE MODELS
 # ============================================================
 
-def detect_text_huggingface(text_content):
+def detect_text_huggingface_model1(text_content):
     """
-    Detect AI-generated text using Hugging Face's RoBERTa detector
-    This replaces Sapling which was giving 401 errors
+    Detect AI text using OpenAI's RoBERTa Large detector
+    This is MODEL 1 of ensemble detection
     """
     
     if not HUGGINGFACE_API_KEY:
@@ -558,97 +558,198 @@ def detect_text_huggingface(text_content):
         return None
     
     try:
-        print(f"🤗 Calling Hugging Face RoBERTa for text detection...")
-        print(f"📝 Text length: {len(text_content)} characters")
+        print(f"🤗 [Model 1] Calling OpenAI RoBERTa Large detector...")
         
-        # Truncate if too long (model has ~2000 char limit)
+        # Truncate if too long
         MAX_CHARS = 2000
-        if len(text_content) > MAX_CHARS:
-            print(f"⚠️ Text too long, truncating to {MAX_CHARS} chars")
-            text_content = text_content[:MAX_CHARS]
+        text_to_check = text_content[:MAX_CHARS] if len(text_content) > MAX_CHARS else text_content
         
         with httpx.Client(timeout=30.0) as client:
             response = client.post(
-                "https://api-inference.huggingface.co/models/Hello-SimpleAI/chatgpt-detector-roberta",
+                "https://api-inference.huggingface.co/models/openai-community/roberta-large-openai-detector",
                 headers={
                     "Authorization": f"Bearer {HUGGINGFACE_API_KEY}",
                     "Content-Type": "application/json"
                 },
-                json={
-                    "inputs": text_content
-                }
+                json={"inputs": text_to_check}
             )
             
-            print(f"🤗 HF Response status: {response.status_code}")
+            print(f"🤗 [Model 1] Response status: {response.status_code}")
             
             if response.status_code == 503:
-                # Model loading, wait and retry
-                print("⏳ Model loading, waiting 10 seconds...")
+                print("⏳ [Model 1] Model loading, waiting 10 seconds...")
                 import time
                 time.sleep(10)
                 response = client.post(
-                    "https://api-inference.huggingface.co/models/Hello-SimpleAI/chatgpt-detector-roberta",
+                    "https://api-inference.huggingface.co/models/openai-community/roberta-large-openai-detector",
                     headers={"Authorization": f"Bearer {HUGGINGFACE_API_KEY}"},
-                    json={"inputs": text_content}
+                    json={"inputs": text_to_check}
                 )
             
             if response.status_code != 200:
-                print(f"⚠️ HF API error: {response.status_code} - {response.text}")
+                print(f"⚠️ [Model 1] API error: {response.status_code}")
                 return None
             
             data = response.json()
-            print(f"🤗 HF Response: {data}")
+            print(f"🤗 [Model 1] Response: {data}")
             
-            # Response format: [[{"label": "Human", "score": 0.97}, {"label": "ChatGPT", "score": 0.03}]]
-            fake_score = 0.5  # Default
-            
-            # Handle nested list format
+            # Parse response - looking for "Fake" or "Real" labels
+            fake_score = 0.5
             if isinstance(data, list) and len(data) > 0:
                 results = data[0] if isinstance(data[0], list) else data
                 for result in results:
                     label = result.get("label", "")
-                    # Check for ChatGPT, AI, or Fake labels (case-sensitive)
-                    if label in ["ChatGPT", "chatgpt", "GPT", "AI", "Fake", "Generated"]:
+                    if label in ["Fake", "fake", "FAKE"]:
                         fake_score = result.get("score", 0.5)
                         break
             
-            print(f"✅ HF AI confidence: {fake_score} ({int(fake_score * 100)}%)")
+            print(f"✅ [Model 1] AI confidence: {fake_score:.2%}")
             
             return {
-                "provider": "Hugging Face (RoBERTa)",
+                "provider": "OpenAI RoBERTa Large",
                 "ai_confidence": fake_score,
                 "verdict": "AI-generated" if fake_score > 0.5 else "Human-written",
                 "raw_response": data
             }
             
     except Exception as e:
-        print(f"⚠️ Hugging Face text detection error: {str(e)}")
-        print(f"Traceback: {traceback.format_exc()}")
+        print(f"⚠️ [Model 1] Error: {str(e)}")
+        return None
+
+
+def detect_text_huggingface_model2(text_content):
+    """
+    Detect AI text using ChatGPT Detector RoBERTa Large
+    This is MODEL 2 of ensemble detection
+    """
+    
+    if not HUGGINGFACE_API_KEY:
+        print("⚠️ No Hugging Face API key")
+        return None
+    
+    try:
+        print(f"🤗 [Model 2] Calling ChatGPT Detector RoBERTa Large...")
+        
+        # Truncate if too long
+        MAX_CHARS = 2000
+        text_to_check = text_content[:MAX_CHARS] if len(text_content) > MAX_CHARS else text_content
+        
+        with httpx.Client(timeout=30.0) as client:
+            response = client.post(
+                "https://api-inference.huggingface.co/models/Hello-SimpleAI/chatgpt-detector-roberta-large",
+                headers={
+                    "Authorization": f"Bearer {HUGGINGFACE_API_KEY}",
+                    "Content-Type": "application/json"
+                },
+                json={"inputs": text_to_check}
+            )
+            
+            print(f"🤗 [Model 2] Response status: {response.status_code}")
+            
+            if response.status_code == 503:
+                print("⏳ [Model 2] Model loading, waiting 10 seconds...")
+                import time
+                time.sleep(10)
+                response = client.post(
+                    "https://api-inference.huggingface.co/models/Hello-SimpleAI/chatgpt-detector-roberta-large",
+                    headers={"Authorization": f"Bearer {HUGGINGFACE_API_KEY}"},
+                    json={"inputs": text_to_check}
+                )
+            
+            if response.status_code != 200:
+                print(f"⚠️ [Model 2] API error: {response.status_code}")
+                return None
+            
+            data = response.json()
+            print(f"🤗 [Model 2] Response: {data}")
+            
+            # Parse response - looking for "ChatGPT" or "Human" labels
+            fake_score = 0.5
+            if isinstance(data, list) and len(data) > 0:
+                results = data[0] if isinstance(data[0], list) else data
+                for result in results:
+                    label = result.get("label", "")
+                    if label in ["ChatGPT", "chatgpt", "GPT", "AI"]:
+                        fake_score = result.get("score", 0.5)
+                        break
+            
+            print(f"✅ [Model 2] AI confidence: {fake_score:.2%}")
+            
+            return {
+                "provider": "ChatGPT Detector RoBERTa Large",
+                "ai_confidence": fake_score,
+                "verdict": "AI-generated" if fake_score > 0.5 else "Human-written",
+                "raw_response": data
+            }
+            
+    except Exception as e:
+        print(f"⚠️ [Model 2] Error: {str(e)}")
         return None
 
 
 def detect_text(text_content):
     """
-    Detect AI in text using Hugging Face RoBERTa
-    UPDATED: Replaces Sapling which was giving 401 errors
+    Detect AI in text using ENSEMBLE of 2 Hugging Face models
+    This gives much better accuracy than a single model!
     """
     
-    print(f"🔍 Starting text AI detection (length: {len(text_content)} chars)")
+    print(f"🔍 Starting ENSEMBLE text AI detection (length: {len(text_content)} chars)")
     
-    # Use Hugging Face for text detection
-    hf_result = detect_text_huggingface(text_content)
+    # Run both models
+    model1_result = detect_text_huggingface_model1(text_content)
+    model2_result = detect_text_huggingface_model2(text_content)
     
-    # If Hugging Face failed, return error
-    if hf_result is None:
-        print(f"❌ Text detection failed: Hugging Face unavailable")
+    # Collect successful results
+    all_results = []
+    if model1_result:
+        all_results.append(model1_result)
+    if model2_result:
+        all_results.append(model2_result)
+    
+    # If both failed, return error
+    if not all_results:
+        print(f"❌ Text detection failed: All models unavailable")
         return create_mock_result(50, "Text detection API unavailable")
     
+    # Calculate ensemble confidence (average of all models)
+    combined_ai_confidence = sum(r["ai_confidence"] for r in all_results) / len(all_results)
+    
     # Calculate trust score (inverse of AI confidence)
-    ai_confidence = hf_result.get("ai_confidence", 0.5)
-    trust_score = int((1 - ai_confidence) * 100)
+    trust_score = int((1 - combined_ai_confidence) * 100)
     label_info = get_label_with_explanation(trust_score)
     
+    print(f"📊 Ensemble Results:")
+    for result in all_results:
+        print(f"   - {result['provider']}: {int(result['ai_confidence'] * 100)}% AI")
+    print(f"📊 Combined AI confidence: {int(combined_ai_confidence * 100)}%")
     print(f"📊 Final trust score: {trust_score} ({label_info['label']})")
+    
+    # Build evidence from all models
+    evidence = []
+    
+    for result in all_results:
+        provider = result["provider"]
+        ai_conf = result["ai_confidence"]
+        verdict = result.get("verdict", "unknown")
+        
+        evidence.append({
+            "category": f"AI Text Detection - {provider}",
+            "signal": f"{provider}: {verdict} ({int(ai_conf * 100)}% AI confidence)",
+            "confidence": float(ai_conf),
+            "details": result
+        })
+    
+    # Add combined result at the top
+    evidence.insert(0, {
+        "category": "Ensemble Analysis",
+        "signal": f"Combined score from {len(all_results)} AI detectors: {int(combined_ai_confidence * 100)}% AI confidence",
+        "confidence": float(combined_ai_confidence),
+        "details": {
+            "num_detectors": len(all_results),
+            "models": [r["provider"] for r in all_results],
+            "combined_confidence": combined_ai_confidence
+        }
+    })
     
     return {
         "trust_score": {
@@ -659,19 +760,13 @@ def detect_text(text_content):
             "recommended_action": label_info["action"],
             "confidence_band": [max(0, trust_score - 10), min(100, trust_score + 10)]
         },
-        "evidence": [
-            {
-                "category": "AI Text Detection",
-                "signal": f"Hugging Face RoBERTa: {hf_result['verdict']} ({int(ai_confidence * 100)}% AI confidence)",
-                "confidence": float(ai_confidence),
-                "details": hf_result
-            }
-        ],
+        "evidence": evidence,
         "metadata": {
-            "provider": "Hugging Face (RoBERTa OpenAI Detector)",
+            "provider": "Ensemble Text Detection (2 Models)",
             "content_type": "text",
             "text_length": len(text_content),
-            "model": "roberta-base-openai-detector"
+            "models_used": [r["provider"] for r in all_results],
+            "ensemble_method": "average"
         }
     }
 
