@@ -212,174 +212,117 @@ def detect_with_huggingface(image_data):
             print(f"🤗 HF Response status: {response.status_code}")
             
             if response.status_code == 503:
-                # Model is loading, this is normal for free tier
-                print(f"⚠️ HF model loading, will retry...")
-                return None
+                print("⏳ Model loading, retrying in 10 seconds...")
+                import time
+                time.sleep(10)
+                response = client.post(
+                    "https://api-inference.huggingface.co/models/Organika/sdxl-detector",
+                    headers={
+                        "Authorization": f"Bearer {HUGGINGFACE_API_KEY}",
+                        "Content-Type": "application/json"
+                    },
+                    json={"inputs": image_b64}
+                )
             
             if response.status_code != 200:
-                print(f"⚠️ HF error: {response.text}")
+                print(f"⚠️ HF API error: {response.status_code}")
                 return None
             
             data = response.json()
             print(f"🤗 HF Response: {data}")
             
             # Parse response - format: [{"label": "artificial", "score": 0.99}]
+            artificial_score = 0.5
             if isinstance(data, list) and len(data) > 0:
                 for item in data:
-                    if item.get("label") in ["artificial", "ai", "fake", "synthetic"]:
-                        ai_score = item.get("score", 0.5)
-                        print(f"🤗 HF AI score: {ai_score}")
-                        return {
-                            "verdict": "ai" if ai_score > 0.5 else "human",
-                            "confidence": ai_score,
-                            "provider": "huggingface-sdxl"
-                        }
+                    if item.get("label") == "artificial":
+                        artificial_score = item.get("score", 0.5)
+                        break
             
-            return None
+            print(f"✅ HF AI confidence: {artificial_score}")
+            
+            return {
+                "provider": "Hugging Face",
+                "ai_confidence": artificial_score,
+                "verdict": "AI-generated" if artificial_score > 0.5 else "Real"
+            }
             
     except Exception as e:
-        print(f"⚠️ Hugging Face error: {str(e)}")
+        print(f"⚠️ HF detection error: {str(e)}")
         return None
 
 
-def detect_image_video_from_data(image_data, filename="uploaded_file", is_video=False):
-    """Detect AI in images/videos using file data directly (no URL download needed)"""
+def detect_image_video_from_data(file_data, filename, is_video=False):
+    """Detect AI in image/video from raw file data"""
     
     if not AIORNOT_API_KEY:
-        print("⚠️ No AIORNOT_API_KEY found")
-        return create_mock_result(75, "No AI or Not API key configured")
+        return create_mock_result(50, "No AIorNOT API key configured")
     
     try:
-        content_type_str = "video" if is_video else "image"
-        print(f"🔍 Analyzing uploaded {content_type_str}: {filename}")
-        print(f"📦 File size: {len(image_data)} bytes")
+        import base64
         
-        if is_video:
-            print(f"⏱️ Note: Video processing may take 30-60 seconds...")
+        print(f"🔍 Detecting {'video' if is_video else 'image'} from uploaded file: {filename}")
         
-        # ===========================================
-        # ENSEMBLE DETECTION: Call multiple APIs
-        # ===========================================
+        # Encode file to base64
+        file_b64 = base64.b64encode(file_data).decode('utf-8')
         
-        all_results = []
-        
-        # 1. Submit to AI or Not v2 sync endpoint
-        endpoint = "https://api.aiornot.com/v2/video/sync" if is_video else "https://api.aiornot.com/v2/image/sync"
-        print(f"🔍 Submitting to AI or Not v2 {content_type_str} API...")
-        
-        with httpx.Client(timeout=120.0) as client:  # Longer timeout for videos
+        # Prepare multipart form data
+        with httpx.Client(timeout=60.0) as client:
+            # AIorNOT expects file upload
+            files = {
+                'object': (filename, file_data, 'application/octet-stream')
+            }
+            
+            print(f"📤 Uploading to AIorNOT...")
             response = client.post(
-                endpoint,
+                "https://api.aiornot.com/v1/reports/image",
                 headers={
                     "Authorization": f"Bearer {AIORNOT_API_KEY}"
                 },
-                files={
-                    content_type_str: (filename, image_data, f"{content_type_str}/jpeg")
-                }
+                files=files
             )
             
-            print(f"📡 Response status: {response.status_code}")
+            print(f"📥 AIorNOT response: {response.status_code}")
             
             if response.status_code != 200:
-                error_msg = f"AI or Not API error {response.status_code}: {response.text}"
-                print(f"⚠️ {error_msg}")
-                return create_mock_result(50, error_msg)
+                print(f"⚠️ AIorNOT error: {response.text}")
+                return create_mock_result(50, f"AIorNOT API Error: {response.status_code}")
             
-            # Parse the response
             data = response.json()
-            print(f"✅ Got response: {data.get('id')}")
+            print(f"✅ AIorNOT response data: {data}")
             
-            # Extract the AI detection results
-            report = data.get("report", {})
-            ai_generated = report.get("ai_generated", {})
+            # Get Hugging Face result too
+            hf_result = detect_with_huggingface(file_data)
             
-            verdict = ai_generated.get("verdict", "unknown")
-            ai_info = ai_generated.get("ai", {})
-            human_info = ai_generated.get("human", {})
+            # Collect all results
+            all_results = []
             
-            ai_confidence = ai_info.get("confidence", 0.5)
-            ai_detected = ai_info.get("is_detected", False)
-            
-            print(f"🎯 AIorNOT Verdict: {verdict}, AI Confidence: {ai_confidence}, AI Detected: {ai_detected}")
-            
-            # Store AIorNOT result
-            aiornot_result = {
+            # AIorNOT result
+            ai_generated = data.get("report", {}).get("ai_generated", {})
+            aiornot_confidence = ai_generated.get("confidence", 0.5)
+            all_results.append({
                 "provider": "AIorNOT",
-                "verdict": verdict,
-                "ai_confidence": ai_confidence,
-                "human_confidence": human_info.get("confidence", 1 - ai_confidence),
-                "generators": ai_generated.get("generator", {}),
-                "report_id": data.get("id")
-            }
-            all_results.append(aiornot_result)
+                "ai_confidence": aiornot_confidence,
+                "verdict": ai_generated.get("verdict", "unknown")
+            })
             
-            # 2. Call Hugging Face SDXL detector (images only - not for videos)
-            if not is_video:
-                hf_result = detect_with_huggingface(image_data)
-                if hf_result:
-                    all_results.append({
-                        "provider": "Hugging Face SDXL",
-                        "verdict": hf_result["verdict"],
-                        "ai_confidence": hf_result["confidence"],
-                        "human_confidence": 1 - hf_result["confidence"]
-                    })
-                    print(f"🤗 HF Verdict: {hf_result['verdict']}, AI Confidence: {hf_result['confidence']}")
-            else:
-                print(f"⏭️ Skipping Hugging Face for video (not supported)")
+            # Hugging Face result
+            if hf_result:
+                all_results.append(hf_result)
             
-            # Note: No Google Search for uploaded files (no URL to search for)
-            print(f"📊 Combining {len(all_results)} detection results (no provenance for uploaded files)...")
+            # Calculate ensemble confidence
+            combined_ai_confidence = sum(r["ai_confidence"] for r in all_results) / len(all_results)
             
-            # ===========================================
-            # ENSEMBLE SCORING: Combine all results
-            # ===========================================
+            # Apply amplification to make scores more decisive
+            combined_ai_confidence = amplify_confidence(combined_ai_confidence)
             
-            # Weighted average (you can adjust weights later)
-            total_ai_confidence = 0
-            total_weight = 0
-            
-            for result in all_results:
-                weight = 1.0  # Equal weight for now
-                total_ai_confidence += result["ai_confidence"] * weight
-                total_weight += weight
-            
-            # Combined AI confidence
-            combined_ai_confidence = total_ai_confidence / total_weight if total_weight > 0 else 0.5
-            
-            print(f"🎯 Combined AI Confidence: {combined_ai_confidence:.2%}")
-            
-            # Calculate trust score from combined confidence
-            base_score = 1 - combined_ai_confidence
-            amplified = amplify_confidence(base_score)
-            trust_score = int(amplified * 100)
-            
-            # Ensure score is in valid range
-            trust_score = max(0, min(100, trust_score))
-            
+            # Calculate trust score (inverse of AI confidence)
+            trust_score = int((1 - combined_ai_confidence) * 100)
             label_info = get_label_with_explanation(trust_score)
             
             print(f"📊 Final trust score: {trust_score} ({label_info['label']})")
             
-            # Get generator info if available
-            generator_info = ai_generated.get("generator", {})
-            top_generators = []
-            if generator_info:
-                try:
-                    sorted_items = []
-                    for gen_name, gen_value in generator_info.items():
-                        if isinstance(gen_value, dict):
-                            confidence = gen_value.get("confidence", 0)
-                        else:
-                            confidence = float(gen_value) if gen_value else 0
-                        sorted_items.append((gen_name, confidence))
-                    
-                    sorted_items.sort(key=lambda x: x[1], reverse=True)
-                    top_generators = [f"{gen}: {int(conf*100)}%" for gen, conf in sorted_items[:3] if conf > 0.5]
-                except Exception as gen_error:
-                    print(f"⚠️ Error parsing generators: {gen_error}")
-                    top_generators = []
-            
-            # Build evidence from all results
+            # Build evidence
             evidence = []
             
             for result in all_results:
@@ -388,9 +331,6 @@ def detect_image_video_from_data(image_data, filename="uploaded_file", is_video=
                 verdict = result.get("verdict", "unknown")
                 
                 signal = f"{provider}: {verdict} ({int(ai_conf * 100)}% AI confidence)"
-                
-                if provider == "AIorNOT" and top_generators:
-                    signal += f" - Detected: {', '.join(top_generators)}"
                 
                 evidence.append({
                     "category": f"AI Detection - {provider}",
@@ -422,180 +362,99 @@ def detect_image_video_from_data(image_data, filename="uploaded_file", is_video=
                 "evidence": evidence,
                 "metadata": {
                     "filename": filename,
-                    "provider": "AI or Not v2",
-                    "content_type": "image",
-                    "report_id": data.get("id"),
-                    "source": "file_upload"
+                    "provider": "Ensemble Detection",
+                    "content_type": "video" if is_video else "image",
+                    "report_id": data.get("id")
                 }
             }
             
     except Exception as e:
-        error_msg = f"AI or Not detection error: {str(e)}"
+        error_msg = f"Detection error: {str(e)}"
         print(f"⚠️ {error_msg}")
-        import traceback
         print(f"Full traceback: {traceback.format_exc()}")
         return create_mock_result(50, error_msg)
 
 
 def detect_image_video(url):
-    """Detect AI in images using AI or Not v2 SYNC API (no polling needed!)"""
+    """Detect AI in image/video from URL using AIorNOT with ensemble scoring"""
     
     if not AIORNOT_API_KEY:
-        print("⚠️ No AIORNOT_API_KEY found")
-        return create_mock_result(75, "No AI or Not API key configured")
+        return create_mock_result(50, "No AIorNOT API key configured")
     
     try:
-        print(f"🔍 Analyzing image with AI or Not v2: {url}")
+        print(f"🔍 Calling AIorNOT for URL: {url}")
         
-        # Use v2 sync API - returns results immediately!
-        with httpx.Client(timeout=90.0) as client:
-            # Download the image first
-            print(f"📥 Downloading image from URL...")
-            image_response = client.get(url)
-            
-            if image_response.status_code != 200:
-                error_msg = f"Failed to download image: {image_response.status_code}"
-                print(f"⚠️ {error_msg}")
-                return create_mock_result(50, error_msg)
-            
-            # Check content type
-            content_type = image_response.headers.get('content-type', '').lower()
-            print(f"📋 Content-Type: {content_type}")
-            
-            # If it's HTML, provide helpful error
-            if 'text/html' in content_type:
-                error_msg = "URL points to a webpage, not an image. Please provide a direct image URL (e.g., ending in .jpg, .png, .webp)"
-                print(f"⚠️ {error_msg}")
-                return create_mock_result(50, error_msg)
-            
-            image_data = image_response.content
-            print(f"✅ Downloaded {len(image_data)} bytes")
-            
-            # ===========================================
-            # ENSEMBLE DETECTION: Call multiple APIs
-            # ===========================================
-            
-            all_results = []
-            
-            # 1. Submit to AI or Not v2 sync endpoint
-            print(f"🔍 Submitting to AI or Not v2 sync API...")
+        with httpx.Client(timeout=60.0) as client:
             response = client.post(
-                "https://api.aiornot.com/v2/image/sync",
+                "https://api.aiornot.com/v1/reports/image",
                 headers={
-                    "Authorization": f"Bearer {AIORNOT_API_KEY}"
+                    "Authorization": f"Bearer {AIORNOT_API_KEY}",
+                    "Content-Type": "application/json"
                 },
-                files={
-                    "image": ("image.jpg", image_data, "image/jpeg")
-                }
+                json={"object": url}
             )
             
-            print(f"📡 Response status: {response.status_code}")
+            print(f"📥 AIorNOT response status: {response.status_code}")
             
             if response.status_code != 200:
-                error_msg = f"AI or Not API error {response.status_code}: {response.text}"
-                print(f"⚠️ {error_msg}")
-                return create_mock_result(50, error_msg)
+                print(f"⚠️ AIorNOT error: {response.text}")
+                return create_mock_result(50, f"API Error: {response.status_code}")
             
-            # Parse the response
             data = response.json()
-            print(f"✅ Got response: {data.get('id')}")
+            print(f"✅ Got AIorNOT response")
             
-            # Extract the AI detection results
-            report = data.get("report", {})
-            ai_generated = report.get("ai_generated", {})
+            # Download image for Hugging Face
+            image_response = client.get(url, timeout=30.0)
+            if image_response.status_code == 200:
+                image_data = image_response.content
+                hf_result = detect_with_huggingface(image_data)
+            else:
+                print(f"⚠️ Could not download image for HF: {image_response.status_code}")
+                hf_result = None
             
-            verdict = ai_generated.get("verdict", "unknown")
-            ai_info = ai_generated.get("ai", {})
-            human_info = ai_generated.get("human", {})
-            
-            ai_confidence = ai_info.get("confidence", 0.5)
-            ai_detected = ai_info.get("is_detected", False)
-            
-            print(f"🎯 AIorNOT Verdict: {verdict}, AI Confidence: {ai_confidence}, AI Detected: {ai_detected}")
-            
-            # Store AIorNOT result
-            aiornot_result = {
-                "provider": "AIorNOT",
-                "verdict": verdict,
-                "ai_confidence": ai_confidence,
-                "human_confidence": human_info.get("confidence", 1 - ai_confidence),
-                "generators": ai_generated.get("generator", {}),
-                "report_id": data.get("id")
-            }
-            all_results.append(aiornot_result)
-            
-            # 2. Call Hugging Face SDXL detector
-            hf_result = detect_with_huggingface(image_data)
-            if hf_result:
-                all_results.append({
-                    "provider": "Hugging Face SDXL",
-                    "verdict": hf_result["verdict"],
-                    "ai_confidence": hf_result["confidence"],
-                    "human_confidence": 1 - hf_result["confidence"]
-                })
-                print(f"🤗 HF Verdict: {hf_result['verdict']}, AI Confidence: {hf_result['confidence']}")
-            
-            # 3. Run Google Reverse Image Search
+            # Google reverse image search
             google_result = reverse_image_search(url)
-            provenance_evidence = None
             
+            # Collect all AI detection results
+            all_results = []
+            
+            # AIorNOT result
+            ai_generated = data.get("report", {}).get("ai_generated", {})
+            aiornot_confidence = ai_generated.get("confidence", 0.5)
+            all_results.append({
+                "provider": "AIorNOT",
+                "ai_confidence": aiornot_confidence,
+                "verdict": ai_generated.get("verdict", "unknown")
+            })
+            
+            # Hugging Face result
+            if hf_result:
+                all_results.append(hf_result)
+            
+            # Calculate ensemble confidence (average of all detectors)
+            combined_ai_confidence = sum(r["ai_confidence"] for r in all_results) / len(all_results)
+            
+            # Apply amplification to make scores more decisive
+            combined_ai_confidence = amplify_confidence(combined_ai_confidence)
+            
+            # Factor in Google provenance if suspicious
+            provenance_evidence = None
             if google_result and google_result.get("found"):
                 suspicious_ratio = google_result.get("suspicious_ratio", 0)
-                num_results = google_result.get("num_results", 0)
-                domains = google_result.get("domains", [])
-                
-                # Create provenance evidence
-                if suspicious_ratio > 0.5:
-                    signal = f"Found on {num_results} websites, {int(suspicious_ratio*100)}% contain AI-related keywords"
-                    verdict = "Suspicious provenance - appears on AI art sites"
-                elif num_results > 20:
-                    signal = f"Widely circulated - found on {num_results} websites"
-                    verdict = "Viral image"
-                else:
-                    signal = f"Found on {num_results} websites: {', '.join(domains[:3])}"
-                    verdict = "Limited circulation"
-                
-                provenance_evidence = {
-                    "category": "Provenance - Google Search",
-                    "signal": signal,
-                    "confidence": 0.7,
-                    "details": {
-                        "num_results": num_results,
-                        "suspicious_ratio": suspicious_ratio,
-                        "domains": domains,
-                        "verdict": verdict
+                if suspicious_ratio > 0.3:  # More than 30% suspicious
+                    # Increase AI confidence slightly based on suspicious findings
+                    provenance_boost = suspicious_ratio * 0.15  # Max 15% boost
+                    combined_ai_confidence = min(1.0, combined_ai_confidence + provenance_boost)
+                    
+                    provenance_evidence = {
+                        "category": "Provenance Analysis",
+                        "signal": f"Found {google_result['num_results']} mentions online, {google_result['suspicious_count']} contain AI-related keywords",
+                        "confidence": suspicious_ratio,
+                        "details": google_result
                     }
-                }
-                print(f"🔍 Google: {verdict}")
             
-            # ===========================================
-            # ENSEMBLE SCORING: Combine all results
-            # ===========================================
-            
-            print(f"📊 Combining {len(all_results)} detection results...")
-            
-            # Weighted average (you can adjust weights later)
-            total_ai_confidence = 0
-            total_weight = 0
-            
-            for result in all_results:
-                weight = 1.0  # Equal weight for now
-                total_ai_confidence += result["ai_confidence"] * weight
-                total_weight += weight
-            
-            # Combined AI confidence
-            combined_ai_confidence = total_ai_confidence / total_weight if total_weight > 0 else 0.5
-            
-            print(f"🎯 Combined AI Confidence: {combined_ai_confidence:.2%}")
-            
-            # Calculate trust score from combined confidence
-            base_score = 1 - combined_ai_confidence
-            amplified = amplify_confidence(base_score)
-            trust_score = int(amplified * 100)
-            
-            # Ensure score is in valid range
-            trust_score = max(0, min(100, trust_score))
-            
+            # Calculate trust score (inverse of AI confidence, scaled 0-100)
+            trust_score = int((1 - combined_ai_confidence) * 100)
             label_info = get_label_with_explanation(trust_score)
             
             print(f"📊 Final trust score: {trust_score} ({label_info['label']})")
@@ -683,58 +542,142 @@ def detect_image_video(url):
         print(f"Full traceback: {traceback.format_exc()}")
         return create_mock_result(50, error_msg)
 
+
+# ============================================================
+# TEXT DETECTION - UPDATED TO USE HUGGING FACE
+# ============================================================
+
+def detect_text_huggingface(text_content):
+    """
+    Detect AI-generated text using Hugging Face's RoBERTa detector
+    This replaces Sapling which was giving 401 errors
+    """
     
-def detect_text(text_content):
-    """Detect AI in text using Sapling AI"""
-    
-    if not SAPLING_API_KEY:
-        return create_mock_result(70, "No Sapling API key configured")
+    if not HUGGINGFACE_API_KEY:
+        print("⚠️ No Hugging Face API key")
+        return None
     
     try:
+        print(f"🤗 Calling Hugging Face RoBERTa for text detection...")
+        print(f"📝 Text length: {len(text_content)} characters")
+        
+        # Truncate if too long (model has ~2000 char limit)
+        MAX_CHARS = 2000
+        if len(text_content) > MAX_CHARS:
+            print(f"⚠️ Text too long, truncating to {MAX_CHARS} chars")
+            text_content = text_content[:MAX_CHARS]
+        
         with httpx.Client(timeout=30.0) as client:
             response = client.post(
-                "https://api.sapling.ai/api/v1/aidetect",
+                "https://api-inference.huggingface.co/models/roberta-base-openai-detector",
+                headers={
+                    "Authorization": f"Bearer {HUGGINGFACE_API_KEY}",
+                    "Content-Type": "application/json"
+                },
                 json={
-                    "key": SAPLING_API_KEY,
-                    "text": text_content
+                    "inputs": text_content
                 }
             )
             
+            print(f"🤗 HF Response status: {response.status_code}")
+            
+            if response.status_code == 503:
+                # Model loading, wait and retry
+                print("⏳ Model loading, waiting 10 seconds...")
+                import time
+                time.sleep(10)
+                response = client.post(
+                    "https://api-inference.huggingface.co/models/roberta-base-openai-detector",
+                    headers={"Authorization": f"Bearer {HUGGINGFACE_API_KEY}"},
+                    json={"inputs": text_content}
+                )
+            
             if response.status_code != 200:
-                print(f"⚠️ Sapling API error: {response.status_code}")
-                return create_mock_result(50, f"API Error: {response.status_code}")
+                print(f"⚠️ HF API error: {response.status_code} - {response.text}")
+                return None
             
             data = response.json()
-            ai_score = data.get("score", 0.5)
+            print(f"🤗 HF Response: {data}")
             
-            # Calculate trust score
-            trust_score = int((1 - ai_score) * 100)
-            label = get_label(trust_score)
+            # Response format: [[{"label": "Real", "score": 0.6}, {"label": "Fake", "score": 0.4}]]
+            # "Fake" means AI-generated
+            
+            fake_score = 0.5  # Default
+            
+            if isinstance(data, list) and len(data) > 0:
+                results = data[0]
+                for result in results:
+                    if result.get("label") == "Fake":
+                        fake_score = result.get("score", 0.5)
+                        break
+            
+            print(f"✅ HF AI confidence: {fake_score} ({int(fake_score * 100)}%)")
             
             return {
-                "trust_score": {
-                    "score": trust_score,
-                    "label": label,
-                    "confidence_band": [max(0, trust_score - 10), min(100, trust_score + 10)]
-                },
-                "evidence": [
-                    {
-                        "category": "AI Text Detection",
-                        "signal": f"{int(ai_score * 100)}% AI probability (Sapling AI)",
-                        "confidence": 0.83,
-                        "details": {"provider": "sapling", "raw_score": ai_score}
-                    }
-                ],
-                "metadata": {
-                    "provider": "Sapling AI",
-                    "content_type": "text"
-                }
+                "provider": "Hugging Face (RoBERTa)",
+                "ai_confidence": fake_score,
+                "verdict": "AI-generated" if fake_score > 0.5 else "Human-written",
+                "raw_response": data
             }
             
     except Exception as e:
-        print(f"⚠️ Sapling detection error: {str(e)}")
-        return create_mock_result(50, f"Detection error: {str(e)}")
+        print(f"⚠️ Hugging Face text detection error: {str(e)}")
+        print(f"Traceback: {traceback.format_exc()}")
+        return None
 
+
+def detect_text(text_content):
+    """
+    Detect AI in text using Hugging Face RoBERTa
+    UPDATED: Replaces Sapling which was giving 401 errors
+    """
+    
+    print(f"🔍 Starting text AI detection (length: {len(text_content)} chars)")
+    
+    # Use Hugging Face for text detection
+    hf_result = detect_text_huggingface(text_content)
+    
+    # If Hugging Face failed, return error
+    if hf_result is None:
+        print(f"❌ Text detection failed: Hugging Face unavailable")
+        return create_mock_result(50, "Text detection API unavailable")
+    
+    # Calculate trust score (inverse of AI confidence)
+    ai_confidence = hf_result.get("ai_confidence", 0.5)
+    trust_score = int((1 - ai_confidence) * 100)
+    label_info = get_label_with_explanation(trust_score)
+    
+    print(f"📊 Final trust score: {trust_score} ({label_info['label']})")
+    
+    return {
+        "trust_score": {
+            "score": trust_score,
+            "label": label_info["label"],
+            "explanation": label_info["explanation"],
+            "confidence": label_info["confidence"],
+            "recommended_action": label_info["action"],
+            "confidence_band": [max(0, trust_score - 10), min(100, trust_score + 10)]
+        },
+        "evidence": [
+            {
+                "category": "AI Text Detection",
+                "signal": f"Hugging Face RoBERTa: {hf_result['verdict']} ({int(ai_confidence * 100)}% AI confidence)",
+                "confidence": float(ai_confidence),
+                "details": hf_result
+            }
+        ],
+        "metadata": {
+            "provider": "Hugging Face (RoBERTa OpenAI Detector)",
+            "content_type": "text",
+            "text_length": len(text_content),
+            "model": "roberta-base-openai-detector"
+        }
+    }
+
+
+# ============================================================
+# HELPER FUNCTIONS
+# ============================================================
 
 def amplify_confidence(confidence):
     """
@@ -774,14 +717,14 @@ def get_label_with_explanation(score):
     elif score >= 35:
         return {
             "label": "Probably Fake",
-            "explanation": "This content shows signs of AI generation. We detected patterns commonly found in AI-created images.",
+            "explanation": "This content shows signs of AI generation. We detected patterns commonly found in AI-created images or text.",
             "confidence": "Moderate-High",
             "action": "Be cautious. This content may be AI-generated or heavily manipulated."
         }
     else:
         return {
             "label": "Likely Fake",
-            "explanation": "This content appears to be AI-generated. We found strong indicators of synthetic creation, including telltale artifacts and patterns typical of AI image generators.",
+            "explanation": "This content appears to be AI-generated. We found strong indicators of synthetic creation, including telltale artifacts and patterns typical of AI generators.",
             "confidence": "High",
             "action": "This content is likely fake. Do not trust without additional verification."
         }
