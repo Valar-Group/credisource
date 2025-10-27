@@ -3,7 +3,6 @@ import os
 import httpx
 import traceback
 import tempfile
-import subprocess
 import json
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
@@ -381,7 +380,7 @@ def detect_image_video_from_data(file_data, filename, is_video=False):
 
 def download_video_with_ytdlp(url, job_id=None):
     """
-    Download video from social media platforms using yt-dlp
+    Download video from social media platforms using yt-dlp Python API
     Supports: YouTube, TikTok, Twitter/X, Instagram, Facebook, etc.
     
     Returns: (video_file_path, error_message)
@@ -389,51 +388,53 @@ def download_video_with_ytdlp(url, job_id=None):
     
     print(f"📥 Attempting to download video from: {url}")
     
+    # Import yt-dlp Python module
+    try:
+        import yt_dlp
+    except ImportError:
+        print(f"❌ yt-dlp not installed")
+        return None, "yt-dlp package not available"
+    
     # Create temp directory for downloads
     temp_dir = tempfile.mkdtemp(prefix="credisource_video_")
     output_template = os.path.join(temp_dir, "video.%(ext)s")
     
     try:
-        # yt-dlp command to download video
-        cmd = [
-            "yt-dlp",
-            "--no-playlist",  # Don't download playlists
-            "--format", "best[ext=mp4]/best",  # Prefer MP4
-            "--output", output_template,
-            "--no-check-certificate",  # Some sites have cert issues
-            "--quiet",  # Reduce output
-            "--no-warnings",
-            url
-        ]
+        # Configure yt-dlp options
+        ydl_opts = {
+            'format': 'best[ext=mp4]/best',  # Prefer MP4
+            'outtmpl': output_template,
+            'noplaylist': True,  # Don't download playlists
+            'quiet': True,
+            'no_warnings': True,
+            'socket_timeout': 60,
+        }
         
         print(f"🎬 Downloading video with yt-dlp...")
         
-        # Run yt-dlp
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=120  # 2 minute timeout
-        )
-        
-        if result.returncode != 0:
-            error_msg = result.stderr or "Unknown error"
-            print(f"❌ yt-dlp failed: {error_msg}")
+        # Download using yt-dlp Python API
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
             
-            # Clean up temp dir
-            try:
-                import shutil
-                shutil.rmtree(temp_dir)
-            except:
-                pass
-                
-            return None, f"Failed to download video: {error_msg}"
+            if not info:
+                print(f"❌ Could not extract video info")
+                try:
+                    import shutil
+                    shutil.rmtree(temp_dir)
+                except:
+                    pass
+                return None, "Could not extract video information"
         
         # Find the downloaded video file
         video_files = [f for f in os.listdir(temp_dir) if f.startswith("video.")]
         
         if not video_files:
             print(f"❌ No video file found after download")
+            try:
+                import shutil
+                shutil.rmtree(temp_dir)
+            except:
+                pass
             return None, "Video download succeeded but file not found"
         
         video_path = os.path.join(temp_dir, video_files[0])
@@ -445,17 +446,8 @@ def download_video_with_ytdlp(url, job_id=None):
         
         return video_path, None
         
-    except subprocess.TimeoutExpired:
-        print(f"❌ Download timed out after 2 minutes")
-        try:
-            import shutil
-            shutil.rmtree(temp_dir)
-        except:
-            pass
-        return None, "Video download timed out (2 minute limit)"
-        
     except Exception as e:
-        print(f"❌ Unexpected error downloading video: {str(e)}")
+        print(f"❌ Error downloading video: {str(e)}")
         print(f"Traceback: {traceback.format_exc()}")
         try:
             import shutil
