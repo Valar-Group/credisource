@@ -266,19 +266,26 @@ def detect_image_video_from_data(file_data, filename, is_video=False):
         
         print(f"🔍 Detecting {'video' if is_video else 'image'} from uploaded file: {filename}")
         
-        # Encode file to base64
-        file_b64 = base64.b64encode(file_data).decode('utf-8')
+        # Choose correct endpoint based on content type
+        if is_video:
+            endpoint = "https://api.aiornot.com/v2/video/sync"
+            file_field_name = "video"
+            timeout = 120.0  # Video can take up to 2 minutes
+        else:
+            endpoint = "https://api.aiornot.com/v1/reports/image"
+            file_field_name = "object"
+            timeout = 60.0
         
         # Prepare multipart form data
-        with httpx.Client(timeout=60.0) as client:
+        with httpx.Client(timeout=timeout) as client:
             # AIorNOT expects file upload
             files = {
-                'object': (filename, file_data, 'application/octet-stream')
+                file_field_name: (filename, file_data, 'application/octet-stream')
             }
             
-            print(f"📤 Uploading to AIorNOT...")
+            print(f"📤 Uploading to AIorNOT ({endpoint})...")
             response = client.post(
-                "https://api.aiornot.com/v1/reports/image",
+                endpoint,
                 headers={
                     "Authorization": f"Bearer {AIORNOT_API_KEY}"
                 },
@@ -294,22 +301,49 @@ def detect_image_video_from_data(file_data, filename, is_video=False):
             data = response.json()
             print(f"✅ AIorNOT response data: {data}")
             
-            # Get Hugging Face result too
-            hf_result = detect_with_huggingface(file_data)
+            # Parse response based on content type
+            if is_video:
+                # Video response format
+                report = data.get("report", {})
+                ai_video = report.get("ai_video", {})
+                ai_voice = report.get("ai_voice", {})
+                
+                # Use video confidence as primary
+                aiornot_confidence = ai_video.get("confidence", 0.5)
+                is_detected = ai_video.get("is_detected", False)
+                
+                # Also check voice if available
+                voice_confidence = ai_voice.get("confidence", 0)
+                
+                # Average video and voice if both available
+                if voice_confidence > 0:
+                    aiornot_confidence = (aiornot_confidence + voice_confidence) / 2
+                
+                verdict = "AI-generated" if is_detected else "Real"
+                
+            else:
+                # Image response format
+                ai_generated = data.get("report", {}).get("ai_generated", {})
+                aiornot_confidence = ai_generated.get("confidence", 0.5)
+                verdict = ai_generated.get("verdict", "unknown")
+            
+            # Get Hugging Face result for images only (not videos)
+            if not is_video:
+                hf_result = detect_with_huggingface(file_data)
+            else:
+                hf_result = None
             
             # Collect all results
             all_results = []
             
             # AIorNOT result
-            ai_generated = data.get("report", {}).get("ai_generated", {})
-            aiornot_confidence = ai_generated.get("confidence", 0.5)
             all_results.append({
                 "provider": "AIorNOT",
                 "ai_confidence": aiornot_confidence,
-                "verdict": ai_generated.get("verdict", "unknown")
+                "verdict": verdict
             })
             
-            # Hugging Face result
+            # Hugging Face result (images only)
             if hf_result:
                 all_results.append(hf_result)
             
@@ -365,7 +399,7 @@ def detect_image_video_from_data(file_data, filename, is_video=False):
                 "evidence": evidence,
                 "metadata": {
                     "filename": filename,
-                    "provider": "Ensemble Detection",
+                    "provider": "AIorNOT" if is_video else "Ensemble Detection",
                     "content_type": "video" if is_video else "image",
                     "report_id": data.get("id")
                 }
