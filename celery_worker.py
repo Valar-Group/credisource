@@ -25,6 +25,7 @@ SAPLING_API_KEY = os.getenv("SAPLING_API_KEY")
 GOOGLE_API_KEY = os.getenv("GOOGLE_SEARCH_API_KEY")
 GOOGLE_SEARCH_ENGINE_ID = os.getenv("GOOGLE_SEARCH_ENGINE_ID")
 HUGGINGFACE_API_KEY = os.getenv("HUGGINGFACE_API_KEY")
+WINSTON_API_KEY = os.getenv("WINSTON_API_KEY")
 
 @app.task(name='credisource.test_task')
 def test_task():
@@ -544,13 +545,73 @@ def detect_image_video(url):
 
 
 # ============================================================
-# TEXT DETECTION - USING OPENAI ROBERTA LARGE (MVP)
+# TEXT DETECTION - USING WINSTON AI
 # ============================================================
+
+def detect_text_winston(text_content):
+    """
+    Detect AI-generated text using Winston AI
+    High accuracy detection with 2,500 free credits
+    """
+    
+    if not WINSTON_API_KEY:
+        print("⚠️ No Winston AI API key")
+        return None
+    
+    try:
+        print(f"🔍 Calling Winston AI for text detection...")
+        print(f"📝 Text length: {len(text_content)} characters")
+        
+        # Winston AI endpoint
+        with httpx.Client(timeout=30.0) as client:
+            response = client.post(
+                "https://api.gowinston.ai/v2/detect",
+                headers={
+                    "Authorization": f"Bearer {WINSTON_API_KEY}",
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "text": text_content,
+                    "language": "en"
+                }
+            )
+            
+            print(f"🔍 Winston AI response status: {response.status_code}")
+            
+            if response.status_code != 200:
+                print(f"⚠️ Winston AI error: {response.status_code} - {response.text}")
+                return None
+            
+            data = response.json()
+            print(f"✅ Winston AI response: {data}")
+            
+            # Parse Winston AI response
+            # Expected format: {"score": 0.95, "isHuman": false}
+            ai_score = data.get("score", 0.5)
+            is_human = data.get("isHuman", None)
+            
+            # Winston score is AI probability (0-1)
+            ai_confidence = ai_score
+            
+            print(f"✅ Winston AI confidence: {ai_confidence:.2%}")
+            
+            return {
+                "provider": "Winston AI",
+                "ai_confidence": ai_confidence,
+                "verdict": "Human-written" if is_human else "AI-generated",
+                "raw_response": data
+            }
+            
+    except Exception as e:
+        print(f"⚠️ Winston AI error: {str(e)}")
+        print(f"Traceback: {traceback.format_exc()}")
+        return None
+
 
 def detect_text_huggingface(text_content):
     """
     Detect AI-generated text using OpenAI's RoBERTa Large detector
-    This is the most accurate free model available on Hugging Face
+    BACKUP method if Winston AI fails
     """
     
     if not HUGGINGFACE_API_KEY:
@@ -558,14 +619,11 @@ def detect_text_huggingface(text_content):
         return None
     
     try:
-        print(f"🤗 Calling OpenAI RoBERTa Large detector for text...")
-        print(f"📝 Text length: {len(text_content)} characters")
+        print(f"🤗 Calling OpenAI RoBERTa Large (backup)...")
         
-        # Truncate if too long (model has ~512 token limit)
+        # Truncate if too long
         MAX_CHARS = 2000
         text_to_check = text_content[:MAX_CHARS] if len(text_content) > MAX_CHARS else text_content
-        if len(text_content) > MAX_CHARS:
-            print(f"⚠️ Text too long, truncating to {MAX_CHARS} chars")
         
         with httpx.Client(timeout=30.0) as client:
             response = client.post(
@@ -576,8 +634,6 @@ def detect_text_huggingface(text_content):
                 },
                 json={"inputs": text_to_check}
             )
-            
-            print(f"🤗 Response status: {response.status_code}")
             
             if response.status_code == 503:
                 print("⏳ Model loading, waiting 10 seconds...")
@@ -590,53 +646,54 @@ def detect_text_huggingface(text_content):
                 )
             
             if response.status_code != 200:
-                print(f"⚠️ API error: {response.status_code} - {response.text}")
+                print(f"⚠️ Backup API error: {response.status_code}")
                 return None
             
             data = response.json()
-            print(f"🤗 Response: {data}")
             
-            # Parse response - OpenAI model returns LABEL_0 (Real) and LABEL_1 (Fake)
-            ai_confidence = 0.5  # Default
+            # Parse response
+            ai_confidence = 0.5
             if isinstance(data, list) and len(data) > 0:
                 results = data[0] if isinstance(data[0], list) else data
                 for result in results:
                     label = result.get("label", "")
                     score = result.get("score", 0.5)
-                    # LABEL_1 = Fake/AI, LABEL_0 = Real/Human
                     if label == "LABEL_1":
                         ai_confidence = score
                         break
             
-            print(f"✅ AI confidence: {ai_confidence:.2%}")
+            print(f"✅ Backup AI confidence: {ai_confidence:.2%}")
             
             return {
-                "provider": "OpenAI RoBERTa Large",
+                "provider": "OpenAI RoBERTa (Backup)",
                 "ai_confidence": ai_confidence,
                 "verdict": "AI-generated" if ai_confidence > 0.5 else "Human-written",
                 "raw_response": data
             }
             
     except Exception as e:
-        print(f"⚠️ Text detection error: {str(e)}")
-        print(f"Traceback: {traceback.format_exc()}")
+        print(f"⚠️ Backup detector error: {str(e)}")
         return None
 
 
 def detect_text(text_content):
     """
-    Detect AI in text using OpenAI RoBERTa Large
-    MVP version - single accurate model for speed and reliability
+    Detect AI in text using Winston AI (primary) with Hugging Face backup
     """
     
     print(f"🔍 Starting text AI detection (length: {len(text_content)} chars)")
     
-    # Run detection
-    result = detect_text_huggingface(text_content)
+    # Try Winston AI first
+    result = detect_text_winston(text_content)
     
-    # If detection failed, return error
+    # If Winston fails, use Hugging Face backup
     if result is None:
-        print(f"❌ Text detection failed: Model unavailable")
+        print(f"⚠️ Winston AI unavailable, using backup detector")
+        result = detect_text_huggingface(text_content)
+    
+    # If both failed, return error
+    if result is None:
+        print(f"❌ Text detection failed: All detectors unavailable")
         return create_mock_result(50, "Text detection API unavailable")
     
     # Calculate trust score (inverse of AI confidence)
@@ -665,10 +722,10 @@ def detect_text(text_content):
             }
         ],
         "metadata": {
-            "provider": "OpenAI RoBERTa Large (Hugging Face)",
+            "provider": result["provider"],
             "content_type": "text",
             "text_length": len(text_content),
-            "model": "roberta-large-openai-detector"
+            "detector": result["provider"]
         }
     }
 
