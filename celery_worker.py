@@ -569,7 +569,7 @@ def detect_text_huggingface(text_content):
         
         with httpx.Client(timeout=30.0) as client:
             response = client.post(
-                "https://api-inference.huggingface.co/models/roberta-base-openai-detector",
+                "https://api-inference.huggingface.co/models/Hello-SimpleAI/chatgpt-detector-roberta",
                 headers={
                     "Authorization": f"Bearer {HUGGINGFACE_API_KEY}",
                     "Content-Type": "application/json"
@@ -587,7 +587,7 @@ def detect_text_huggingface(text_content):
                 import time
                 time.sleep(10)
                 response = client.post(
-                    "https://api-inference.huggingface.co/models/roberta-base-openai-detector",
+                    "https://api-inference.huggingface.co/models/Hello-SimpleAI/chatgpt-detector-roberta",
                     headers={"Authorization": f"Bearer {HUGGINGFACE_API_KEY}"},
                     json={"inputs": text_content}
                 )
