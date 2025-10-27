@@ -607,43 +607,61 @@ def detect_text_winston(text_content):
             # Extract the actual detection result from content
             content = result.get("content", [])
             if content and len(content) > 0:
-                # Parse the text response which contains the detection results
+                # Parse the text response which contains JSON with detection results
                 text_result = content[0].get("text", "")
-                print(f"📊 Winston result text: {text_result}")
+                print(f"📊 Winston result text (first 500 chars): {text_result[:500]}")
                 
-                # Winston returns text with score - try to extract it
-                # Format might be: "Score: 0.95" or similar
-                # For now, parse the text response
-                
-                # Try to find AI probability in the response
-                ai_confidence = 0.5  # Default
-                
-                # Parse score from text (Winston returns detailed analysis)
-                # We'll look for patterns like "AI: 95%" or "Human: 5%"
-                import re
-                
-                # Try to extract percentage or score
-                score_match = re.search(r'(\d+)%?\s*(AI|artificial|generated)', text_result, re.IGNORECASE)
-                if score_match:
-                    ai_confidence = float(score_match.group(1)) / 100
-                else:
-                    # Try to find "human" percentage and invert
-                    human_match = re.search(r'(\d+)%?\s*(human|real)', text_result, re.IGNORECASE)
-                    if human_match:
-                        ai_confidence = 1 - (float(human_match.group(1)) / 100)
-                
-                print(f"✅ Winston AI confidence: {ai_confidence:.2%}")
-                
-                # Determine verdict
-                is_human = ai_confidence < 0.5
-                
-                return {
-                    "provider": "Winston AI",
-                    "ai_confidence": ai_confidence,
-                    "verdict": "Human-written" if is_human else "AI-generated",
-                    "raw_response": data,
-                    "analysis_text": text_result
-                }
+                # Parse the JSON within the text response
+                try:
+                    import json
+                    winston_data = json.loads(text_result)
+                    
+                    # Winston returns overall score and per-sentence scores
+                    # Score is 0-100 where:
+                    # - 0 = 0% human (100% AI)
+                    # - 100 = 100% human (0% AI)
+                    
+                    # Try to get overall score first
+                    overall_score = winston_data.get("score")
+                    
+                    # If no overall score, calculate from sentences
+                    if overall_score is None:
+                        sentences = winston_data.get("sentences", [])
+                        if sentences:
+                            # Average the sentence scores
+                            scores = [s.get("score", 50) for s in sentences if "score" in s]
+                            if scores:
+                                overall_score = sum(scores) / len(scores)
+                            else:
+                                overall_score = 50
+                        else:
+                            overall_score = 50
+                    
+                    print(f"📊 Winston human score: {overall_score}% (0=AI, 100=human)")
+                    
+                    # Convert to AI confidence (inverse of human score)
+                    # Winston: 0 = AI, 100 = human
+                    # We need: 0 = human, 1 = AI
+                    ai_confidence = 1 - (overall_score / 100)
+                    
+                    print(f"✅ Winston AI confidence: {ai_confidence:.2%}")
+                    
+                    # Determine verdict
+                    is_human = ai_confidence < 0.5
+                    
+                    return {
+                        "provider": "Winston AI",
+                        "ai_confidence": ai_confidence,
+                        "verdict": "Human-written" if is_human else "AI-generated",
+                        "raw_response": data,
+                        "winston_score": overall_score,
+                        "credits_used": winston_data.get("credits_used"),
+                        "credits_remaining": winston_data.get("credits_remaining")
+                    }
+                    
+                except json.JSONDecodeError as je:
+                    print(f"⚠️ Could not parse Winston JSON response: {je}")
+                    return None
             else:
                 print(f"⚠️ Unexpected Winston response format")
                 return None
