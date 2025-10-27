@@ -593,14 +593,19 @@ def detect_text_huggingface_model1(text_content):
             data = response.json()
             print(f"🤗 [Model 1] Response: {data}")
             
-            # Parse response - looking for "Fake" or "Real" labels
+            # Parse response - OpenAI model returns LABEL_0 (Real) and LABEL_1 (Fake)
             fake_score = 0.5
             if isinstance(data, list) and len(data) > 0:
                 results = data[0] if isinstance(data[0], list) else data
                 for result in results:
                     label = result.get("label", "")
-                    if label in ["Fake", "fake", "FAKE"]:
-                        fake_score = result.get("score", 0.5)
+                    score = result.get("score", 0.5)
+                    # LABEL_1 = Fake/AI, LABEL_0 = Real/Human
+                    if label == "LABEL_1":
+                        fake_score = score
+                        break
+                    elif label in ["Fake", "fake", "FAKE"]:
+                        fake_score = score
                         break
             
             print(f"✅ [Model 1] AI confidence: {fake_score:.2%}")
@@ -619,7 +624,7 @@ def detect_text_huggingface_model1(text_content):
 
 def detect_text_huggingface_model2(text_content):
     """
-    Detect AI text using ChatGPT Detector RoBERTa Large
+    Detect AI text using ChatGPT Detector RoBERTa (base version)
     This is MODEL 2 of ensemble detection
     """
     
@@ -628,7 +633,7 @@ def detect_text_huggingface_model2(text_content):
         return None
     
     try:
-        print(f"🤗 [Model 2] Calling ChatGPT Detector RoBERTa Large...")
+        print(f"🤗 [Model 2] Calling ChatGPT Detector RoBERTa...")
         
         # Truncate if too long
         MAX_CHARS = 2000
@@ -636,7 +641,7 @@ def detect_text_huggingface_model2(text_content):
         
         with httpx.Client(timeout=30.0) as client:
             response = client.post(
-                "https://api-inference.huggingface.co/models/Hello-SimpleAI/chatgpt-detector-roberta-large",
+                "https://api-inference.huggingface.co/models/Hello-SimpleAI/chatgpt-detector-roberta",
                 headers={
                     "Authorization": f"Bearer {HUGGINGFACE_API_KEY}",
                     "Content-Type": "application/json"
@@ -651,7 +656,7 @@ def detect_text_huggingface_model2(text_content):
                 import time
                 time.sleep(10)
                 response = client.post(
-                    "https://api-inference.huggingface.co/models/Hello-SimpleAI/chatgpt-detector-roberta-large",
+                    "https://api-inference.huggingface.co/models/Hello-SimpleAI/chatgpt-detector-roberta",
                     headers={"Authorization": f"Bearer {HUGGINGFACE_API_KEY}"},
                     json={"inputs": text_to_check}
                 )
@@ -676,7 +681,7 @@ def detect_text_huggingface_model2(text_content):
             print(f"✅ [Model 2] AI confidence: {fake_score:.2%}")
             
             return {
-                "provider": "ChatGPT Detector RoBERTa Large",
+                "provider": "ChatGPT Detector RoBERTa",
                 "ai_confidence": fake_score,
                 "verdict": "AI-generated" if fake_score > 0.5 else "Human-written",
                 "raw_response": data
