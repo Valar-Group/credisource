@@ -607,60 +607,50 @@ def detect_text_winston(text_content):
             # Extract the actual detection result from content
             content = result.get("content", [])
             if content and len(content) > 0:
-                # Parse the text response which contains JSON with detection results
+                # Parse the text response which contains detection results in plain text
                 text_result = content[0].get("text", "")
                 print(f"📊 Winston result text (first 500 chars): {text_result[:500]}")
                 
-                # Parse the JSON within the text response
-                try:
-                    import json
-                    winston_data = json.loads(text_result)
-                    
-                    # Winston returns overall score and per-sentence scores
-                    # Score is 0-100 where:
-                    # - 0 = 0% human (100% AI)
-                    # - 100 = 100% human (0% AI)
-                    
-                    # Try to get overall score first
-                    overall_score = winston_data.get("score")
-                    
-                    # If no overall score, calculate from sentences
-                    if overall_score is None:
-                        sentences = winston_data.get("sentences", [])
-                        if sentences:
-                            # Average the sentence scores
-                            scores = [s.get("score", 50) for s in sentences if "score" in s]
-                            if scores:
-                                overall_score = sum(scores) / len(scores)
-                            else:
-                                overall_score = 50
-                        else:
-                            overall_score = 50
-                    
-                    print(f"📊 Winston human score: {overall_score}% (0=AI, 100=human)")
+                # Winston returns plain text like:
+                # "The AI detector Winston AI has detected the text as 17.89% human-written..."
+                
+                import re
+                
+                # Extract the human percentage from text
+                human_match = re.search(r'(\d+\.?\d*)%\s*human', text_result, re.IGNORECASE)
+                
+                if human_match:
+                    human_score = float(human_match.group(1))
+                    print(f"📊 Winston human score: {human_score}% (0=AI, 100=human)")
                     
                     # Convert to AI confidence (inverse of human score)
-                    # Winston: 0 = AI, 100 = human
-                    # We need: 0 = human, 1 = AI
-                    ai_confidence = 1 - (overall_score / 100)
+                    # Winston: 0% human = 100% AI
+                    # Winston: 100% human = 0% AI
+                    ai_confidence = 1 - (human_score / 100)
                     
                     print(f"✅ Winston AI confidence: {ai_confidence:.2%}")
                     
                     # Determine verdict
                     is_human = ai_confidence < 0.5
                     
-                    return {
+                    # Try to extract credits info if available in the full response
+                    credits_match = re.search(r'"credits_remaining":\s*(\d+)', str(data))
+                    credits_remaining = int(credits_match.group(1)) if credits_match else None
+                    
+                    result_data = {
                         "provider": "Winston AI",
                         "ai_confidence": ai_confidence,
                         "verdict": "Human-written" if is_human else "AI-generated",
                         "raw_response": data,
-                        "winston_score": overall_score,
-                        "credits_used": winston_data.get("credits_used"),
-                        "credits_remaining": winston_data.get("credits_remaining")
+                        "winston_human_score": human_score
                     }
                     
-                except json.JSONDecodeError as je:
-                    print(f"⚠️ Could not parse Winston JSON response: {je}")
+                    if credits_remaining:
+                        result_data["credits_remaining"] = credits_remaining
+                    
+                    return result_data
+                else:
+                    print(f"⚠️ Could not extract human percentage from Winston response")
                     return None
             else:
                 print(f"⚠️ Unexpected Winston response format")
