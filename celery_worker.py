@@ -542,8 +542,29 @@ def detect_image_video(url):
             
             return result
         
-        # Otherwise, try direct URL (for direct video/image links)
-        print(f"🔍 Calling AIorNOT for URL: {url}")
+        # Otherwise, for direct URLs, download and process
+        print(f"🔍 Processing direct URL: {url}")
+        
+        # Check if URL ends with video extension
+        video_extensions = ['.mp4', '.mov', '.avi', '.mkv', '.webm', '.flv', '.wmv', '.m4v']
+        is_video_url = any(url.lower().endswith(ext) for ext in video_extensions)
+        
+        if is_video_url:
+            # Download video file
+            print(f"🎥 Detected direct video URL, downloading...")
+            with httpx.Client(timeout=120.0) as client:
+                video_response = client.get(url)
+                if video_response.status_code != 200:
+                    return create_mock_result(50, f"Could not download video: {video_response.status_code}")
+                
+                video_data = video_response.content
+                print(f"✅ Video downloaded ({len(video_data)} bytes)")
+                
+                # Process as video
+                return detect_image_video_from_data(video_data, "video.mp4", is_video=True)
+        
+        # Otherwise it's an image URL - use image endpoint
+        print(f"🔍 Calling AIorNOT for image URL: {url}")
         
         with httpx.Client(timeout=60.0) as client:
             response = client.post(
