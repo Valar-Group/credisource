@@ -551,6 +551,7 @@ def detect_image_video(url):
 def detect_text_winston(text_content):
     """
     Detect AI-generated text using Winston AI
+    Uses JSON-RPC 2.0 format via MCP server
     High accuracy detection with 2,500 free credits
     """
     
@@ -562,17 +563,31 @@ def detect_text_winston(text_content):
         print(f"🔍 Calling Winston AI for text detection...")
         print(f"📝 Text length: {len(text_content)} characters")
         
-        # Winston AI endpoint
+        # Winston AI requires minimum 300 characters for text detection
+        if len(text_content) < 300:
+            print(f"⚠️ Text too short ({len(text_content)} chars), Winston AI requires 300+ chars")
+            print(f"   Falling back to backup detector")
+            return None
+        
+        # Winston AI MCP endpoint using JSON-RPC 2.0
         with httpx.Client(timeout=30.0) as client:
             response = client.post(
-                "https://api.gowinston.ai/v2/detect",
+                "https://api.gowinston.ai/mcp/v1",
                 headers={
-                    "Authorization": f"Bearer {WINSTON_API_KEY}",
-                    "Content-Type": "application/json"
+                    "Content-Type": "application/json",
+                    "Accept": "application/json"
                 },
                 json={
-                    "text": text_content,
-                    "language": "en"
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "ai-text-detection",
+                        "arguments": {
+                            "text": text_content,
+                            "apiKey": WINSTON_API_KEY
+                        }
+                    }
                 }
             )
             
@@ -585,22 +600,53 @@ def detect_text_winston(text_content):
             data = response.json()
             print(f"✅ Winston AI response: {data}")
             
-            # Parse Winston AI response
-            # Expected format: {"score": 0.95, "isHuman": false}
-            ai_score = data.get("score", 0.5)
-            is_human = data.get("isHuman", None)
+            # Parse Winston AI JSON-RPC response
+            # Expected format: {"jsonrpc": "2.0", "id": 1, "result": {"content": [{"text": "..."}]}}
+            result = data.get("result", {})
             
-            # Winston score is AI probability (0-1)
-            ai_confidence = ai_score
-            
-            print(f"✅ Winston AI confidence: {ai_confidence:.2%}")
-            
-            return {
-                "provider": "Winston AI",
-                "ai_confidence": ai_confidence,
-                "verdict": "Human-written" if is_human else "AI-generated",
-                "raw_response": data
-            }
+            # Extract the actual detection result from content
+            content = result.get("content", [])
+            if content and len(content) > 0:
+                # Parse the text response which contains the detection results
+                text_result = content[0].get("text", "")
+                print(f"📊 Winston result text: {text_result}")
+                
+                # Winston returns text with score - try to extract it
+                # Format might be: "Score: 0.95" or similar
+                # For now, parse the text response
+                
+                # Try to find AI probability in the response
+                ai_confidence = 0.5  # Default
+                
+                # Parse score from text (Winston returns detailed analysis)
+                # We'll look for patterns like "AI: 95%" or "Human: 5%"
+                import re
+                
+                # Try to extract percentage or score
+                score_match = re.search(r'(\d+)%?\s*(AI|artificial|generated)', text_result, re.IGNORECASE)
+                if score_match:
+                    ai_confidence = float(score_match.group(1)) / 100
+                else:
+                    # Try to find "human" percentage and invert
+                    human_match = re.search(r'(\d+)%?\s*(human|real)', text_result, re.IGNORECASE)
+                    if human_match:
+                        ai_confidence = 1 - (float(human_match.group(1)) / 100)
+                
+                print(f"✅ Winston AI confidence: {ai_confidence:.2%}")
+                
+                # Determine verdict
+                is_human = ai_confidence < 0.5
+                
+                return {
+                    "provider": "Winston AI",
+                    "ai_confidence": ai_confidence,
+                    "verdict": "Human-written" if is_human else "AI-generated",
+                    "raw_response": data,
+                    "analysis_text": text_result
+                }
+            else:
+                print(f"⚠️ Unexpected Winston response format")
+                return None
             
     except Exception as e:
         print(f"⚠️ Winston AI error: {str(e)}")
