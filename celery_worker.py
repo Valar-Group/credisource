@@ -604,12 +604,14 @@ def detect_text_huggingface(text_content):
             
             fake_score = 0.5  # Default
             
-            if isinstance(data, list) and len(data) > 0:
-                results = data[0]
-                for result in results:
-                    if result.get("label") == "Fake":
-                        fake_score = result.get("score", 0.5)
-                        break
+           if isinstance(data, list) and len(data) > 0:
+    results = data[0]
+    for result in results:
+        label = result.get("label", "")
+        # Check for ChatGPT, AI, or Fake labels
+        if label in ["ChatGPT", "chatgpt", "GPT", "AI", "Fake", "Generated"]:
+            fake_score = result.get("score", 0.5)
+            break
             
             print(f"✅ HF AI confidence: {fake_score} ({int(fake_score * 100)}%)")
             
