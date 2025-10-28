@@ -76,7 +76,7 @@ async def verify_url(request: VerifyURLRequest):
     
     # Queue the job
     task = celery_app.send_task(
-        'verify_content',  # SIMPLIFIED: Just the task name, no prefix needed
+        'credisource.verify_content',  # FIXED: Match worker task name
         args=[job_id, request.url, request.content_type],
         task_id=job_id
     )
@@ -142,7 +142,7 @@ async def verify_text(request: VerifyTextRequest):
     
     # Queue the job
     task = celery_app.send_task(
-        'verify_content',  # SIMPLIFIED: Just the task name
+        'credisource.verify_content',  # FIXED: Match worker task name
         args=[job_id, request.text, 'text'],
         task_id=job_id
     )
@@ -201,7 +201,7 @@ async def verify_file(request: Request):
                 
                 # Queue text verification
                 task = celery_app.send_task(
-                    'verify_content',  # SIMPLIFIED: Just the task name
+                    'credisource.verify_content',  # FIXED: Match worker task name
                     args=[job_id, text_content, "text"],
                     task_id=job_id
                 )
@@ -225,7 +225,7 @@ async def verify_file(request: Request):
         
         # Queue the job
         task = celery_app.send_task(
-            'verify_content_file',  # Different task for file uploads
+            'credisource.verify_content_file',  # FIXED: Match worker task name
             args=[job_id, file_base64, file.filename, content_type],
             task_id=job_id
         )
