@@ -577,23 +577,50 @@ async def verify_news_article(url: str) -> Dict:
 # ============================================================================
 
 @app.task(bind=True, name="credisource.verify_content")
-def verify_content(self, job_id: str, content_data: Dict):
-    """Main Celery task for content verification"""
+def verify_content(self, job_id: str, content: str, content_type: str):
+    """
+    Main Celery task for content verification
+    
+    Args:
+        job_id: Unique job identifier
+        content: URL for news/images/videos, or text content for text verification
+        content_type: "news", "image", "video", or "text"
+    """
     import asyncio
     
-    content_type = content_data.get("content_type")
-    url = content_data.get("url")
-    
-    print(f"🔍 Processing job {job_id} for {url} (type: {content_type})")
+    print(f"🔍 Processing job {job_id} for content (type: {content_type})")
     
     if content_type == "news":
-        # Run async news verification
+        # Content is a URL
+        url = content
+        print(f"📰 News URL: {url}")
         result = asyncio.run(verify_news_article(url))
         print(f"✅ Completed job {job_id}: Score {result.get('trust_score', {}).get('score', 0)}")
         return result
     
-    # TODO: Add other content types (image, video, text)
-    return {"error": "Content type not implemented yet"}
+    elif content_type == "text":
+        # Content is text to verify
+        text = content
+        print(f"📝 Text content: {len(text)} characters")
+        # TODO: Implement text AI detection (Winston AI / Hugging Face)
+        return {"error": "Text verification not yet updated with reasoning"}
+    
+    elif content_type == "image":
+        # Content is image URL
+        url = content
+        print(f"🖼️ Image URL: {url}")
+        # TODO: Implement image AI detection with reasoning
+        return {"error": "Image verification not yet updated with reasoning"}
+    
+    elif content_type == "video":
+        # Content is video URL
+        url = content
+        print(f"🎥 Video URL: {url}")
+        # TODO: Implement video AI detection with reasoning
+        return {"error": "Video verification not yet updated with reasoning"}
+    
+    else:
+        return {"error": f"Unknown content type: {content_type}"}
 
 if __name__ == "__main__":
     # For testing
