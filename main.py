@@ -32,7 +32,7 @@ celery_app = Celery('credisource', broker=REDIS_URL, backend=REDIS_URL)
 # Models
 class VerifyURLRequest(BaseModel):
     url: str
-    content_type: str  # 'image', 'video', 'text'
+    content_type: str  # 'image', 'video', 'text', 'news'
 
 class VerifyTextRequest(BaseModel):
     text: str
@@ -53,6 +53,7 @@ def read_root():
             "verify_url": "POST /verify/url",
             "verify_image": "POST /verify/image",
             "verify_video": "POST /verify/video",
+            "verify_news": "POST /verify/news",
             "verify_file": "POST /verify/file",
             "verify_text": "POST /verify/text",
             "job_status": "GET /job/{job_id}",
@@ -104,6 +105,16 @@ async def verify_video(request: VerifyURLRequest):
     Accepts URL and automatically sets content_type to 'video'
     """
     request.content_type = "video"
+    return await verify_url(request)
+
+# News Verification Endpoint
+@app.post("/verify/news", response_model=JobResponse)
+async def verify_news(request: VerifyURLRequest):
+    """
+    Verify news article from URL (convenience endpoint)
+    Checks source credibility + content authenticity + cross-reference
+    """
+    request.content_type = "news"
     return await verify_url(request)
 
 # Text Verification Endpoint
