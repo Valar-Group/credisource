@@ -40,7 +40,7 @@ redis_client = redis.from_url(REDIS_URL)
 # This routes API calls to the correct verification function
 # ============================================================================
 
-@app.task(name='verify_content', bind=True)
+@app.task(name='credisource.verify_content', bind=True)
 def verify_content(self, job_id: str, url_or_text: str, content_type: str) -> Dict:
     """
     Universal content verification task - routes to appropriate handler
@@ -85,7 +85,7 @@ def verify_content(self, job_id: str, url_or_text: str, content_type: str) -> Di
         }
 
 
-@app.task(name='verify_content_file', bind=True)
+@app.task(name='credisource.verify_content_file', bind=True)
 def verify_content_file(self, job_id: str, file_base64: str, filename: str, content_type: str) -> Dict:
     """
     Handle file uploads (images/videos encoded as base64)
