@@ -9,3 +9,6 @@ Pillow==10.1.0
 python-dotenv==1.0.0
 yt-dlp==2024.8.6
 beautifulsoup4==4.12.2
+newspaper3k==0.2.8
+lxml[html_clean]==5.1.0
+nltk==3.8.1
