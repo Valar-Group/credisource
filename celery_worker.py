@@ -862,7 +862,13 @@ def extract_article(url):
     try:
         with httpx.Client(timeout=30.0, follow_redirects=True) as client:
             headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.5',
+                'Accept-Encoding': 'gzip, deflate, br',
+                'DNT': '1',
+                'Connection': 'keep-alive',
+                'Upgrade-Insecure-Requests': '1'
             }
             response = client.get(url, headers=headers)
             
@@ -1114,6 +1120,17 @@ def calculate_news_trust_score(source_check, text_detection, image_detections, c
             "weight": "30%",
             "verdict": text_detection["trust_score"]["label"]
         })
+    else:
+        # If text detection skipped (short article), use source score as proxy
+        print(f"💡 Text detection skipped - using source credibility as proxy")
+        scores.append(source_score)
+        weights.append(0.30)
+        factors.append({
+            "factor": "Text Authenticity",
+            "score": source_score,
+            "weight": "30%",
+            "verdict": "Not analyzed (article too short - based on source trust)"
+        })
     
     # Factor 3: Image Authenticity (15%)
     if image_detections:
@@ -1183,7 +1200,13 @@ def verify_news(url):
     # Step 3: Detect AI in text
     text_detection = None
     if article["text"] and len(article["text"]) > 300:
-        text_detection = detect_text(article["text"])
+        # Only run text detection on substantial text
+        # Skip very short snippets (live blogs, etc.) that cause false positives
+        if article["word_count"] > 100:  # At least 100 words
+            text_detection = detect_text(article["text"])
+        else:
+            print(f"⚠️ Skipping text AI detection - article too short ({article['word_count']} words)")
+            print(f"💡 Short articles (live blogs, updates) often trigger false positives")
     
     # Step 4: Detect AI in images
     image_detections = []
