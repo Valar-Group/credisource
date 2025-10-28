@@ -1,633 +1,1018 @@
-# celery_worker.py - Enhanced with Content Reasoning
-# CrediSource - AI Content Verification Platform
+"""
+CrediSource Celery Worker - IMPROVED VERSION
+- Top 50+ news sources database
+- Smart cross-reference with story type detection
+- Better search term extraction
+- Google News backup
+- Context-aware scoring
+"""
 
 import os
 import re
-from celery import Celery
-from newspaper import Article
-import httpx
+import time
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional
+from celery import Celery
+import httpx
+import requests
+from newspaper import Article
+import feedparser
+
+# Environment variables
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+SIGHTENGINE_USER = os.getenv("SIGHTENGINE_USER")
+SIGHTENGINE_SECRET = os.getenv("SIGHTENGINE_SECRET")
+NEWS_API_KEY = os.getenv("NEWS_API_KEY")
 
 # Initialize Celery
-redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-app = Celery("credisource", broker=redis_url, backend=redis_url)
-
-# API Keys
-AIORNOT_API_KEY = os.getenv("AIORNOT_API_KEY")
-WINSTON_API_KEY = os.getenv("WINSTON_API_KEY")
-SIGHTENGINE_USER = os.getenv("SIGHTENGINE_USER", "1740276646")
-SIGHTENGINE_SECRET = os.getenv("SIGHTENGINE_SECRET", "tBPjvP7aR8DajbWT2t2bgu2QJeP6FmvS")
-NEWS_API_KEY = os.getenv("NEWS_API_KEY", "9bffad84ca1c4fd6b4f167c5a74a0cb7")
-HUGGINGFACE_API_KEY = os.getenv("HUGGINGFACE_API_KEY")
+app = Celery('credisource', broker=REDIS_URL, backend=REDIS_URL)
 
 # ============================================================================
-# SOURCE CREDIBILITY DATABASE (YOUR IP!)
+# TOP 50+ NEWS SOURCES DATABASE
 # ============================================================================
 
 SOURCE_CREDIBILITY = {
-    # Tier 1: Highly Credible (90-100)
-    "reuters.com": {"score": 98, "tier": "tier1", "bias": "center", "type": "wire_service"},
-    "apnews.com": {"score": 98, "tier": "tier1", "bias": "center", "type": "wire_service"},
-    "bbc.co.uk": {"score": 95, "tier": "tier1", "bias": "center", "type": "established_news"},
-    "bbc.com": {"score": 95, "tier": "tier1", "bias": "center", "type": "established_news"},
-    "npr.org": {"score": 92, "tier": "tier1", "bias": "center-left", "type": "established_news"},
-    "economist.com": {"score": 92, "tier": "tier1", "bias": "center", "type": "established_news"},
-    "theguardian.com": {"score": 90, "tier": "tier1", "bias": "center-left", "type": "established_news"},
     
-    # Tier 2: Generally Credible (70-89)
-    "nytimes.com": {"score": 88, "tier": "tier2", "bias": "center-left", "type": "established_news"},
-    "washingtonpost.com": {"score": 88, "tier": "tier2", "bias": "center-left", "type": "established_news"},
-    "wsj.com": {"score": 87, "tier": "tier2", "bias": "center-right", "type": "established_news"},
-    "cnn.com": {"score": 82, "tier": "tier2", "bias": "center-left", "type": "cable_news"},
-    "foxnews.com": {"score": 75, "tier": "tier2", "bias": "right", "type": "cable_news"},
-    "msnbc.com": {"score": 75, "tier": "tier2", "bias": "left", "type": "cable_news"},
-    "bloomberg.com": {"score": 85, "tier": "tier2", "bias": "center", "type": "business_news"},
+    # TIER 1: HIGHEST CREDIBILITY (90-100)
+    "reuters.com": {
+        "score": 98,
+        "tier": "tier1",
+        "bias": "center",
+        "type": "wire_service"
+    },
+    "apnews.com": {
+        "score": 97,
+        "tier": "tier1",
+        "bias": "center",
+        "type": "wire_service"
+    },
+    "bbc.com": {
+        "score": 95,
+        "tier": "tier1",
+        "bias": "center",
+        "type": "public_broadcaster"
+    },
+    "bbc.co.uk": {
+        "score": 95,
+        "tier": "tier1",
+        "bias": "center",
+        "type": "public_broadcaster"
+    },
+    "cbc.ca": {
+        "score": 92,
+        "tier": "tier1",
+        "bias": "center-left",
+        "type": "public_broadcaster"
+    },
+    "abc.net.au": {
+        "score": 90,
+        "tier": "tier1",
+        "bias": "center",
+        "type": "public_broadcaster"
+    },
     
-    # Tier 3: Mixed Reliability (40-69)
-    "dailymail.co.uk": {"score": 55, "tier": "tier3", "bias": "right", "type": "tabloid"},
-    "nypost.com": {"score": 60, "tier": "tier3", "bias": "right", "type": "tabloid"},
-    "thesun.co.uk": {"score": 50, "tier": "tier3", "bias": "right", "type": "tabloid"},
-    "buzzfeed.com": {"score": 65, "tier": "tier3", "bias": "center-left", "type": "mixed_content"},
+    # TIER 2: HIGH CREDIBILITY (70-89)
+    "nytimes.com": {
+        "score": 87,
+        "tier": "tier2",
+        "bias": "center-left",
+        "type": "established_news"
+    },
+    "washingtonpost.com": {
+        "score": 85,
+        "tier": "tier2",
+        "bias": "center-left",
+        "type": "established_news"
+    },
+    "wsj.com": {
+        "score": 86,
+        "tier": "tier2",
+        "bias": "center-right",
+        "type": "financial_news"
+    },
+    "usatoday.com": {
+        "score": 78,
+        "tier": "tier2",
+        "bias": "center",
+        "type": "established_news"
+    },
+    "cnn.com": {
+        "score": 75,
+        "tier": "tier2",
+        "bias": "center-left",
+        "type": "cable_news"
+    },
+    "cbsnews.com": {
+        "score": 80,
+        "tier": "tier2",
+        "bias": "center-left",
+        "type": "broadcast_news"
+    },
+    "nbcnews.com": {
+        "score": 79,
+        "tier": "tier2",
+        "bias": "center-left",
+        "type": "broadcast_news"
+    },
+    "abcnews.go.com": {
+        "score": 78,
+        "tier": "tier2",
+        "bias": "center",
+        "type": "broadcast_news"
+    },
+    "cnbc.com": {
+        "score": 76,
+        "tier": "tier2",
+        "bias": "center",
+        "type": "financial_news"
+    },
+    "theguardian.com": {
+        "score": 82,
+        "tier": "tier2",
+        "bias": "center-left",
+        "type": "established_news"
+    },
+    "independent.co.uk": {
+        "score": 73,
+        "tier": "tier2",
+        "bias": "center-left",
+        "type": "established_news"
+    },
+    "telegraph.co.uk": {
+        "score": 74,
+        "tier": "tier2",
+        "bias": "center-right",
+        "type": "established_news"
+    },
+    "news.sky.com": {
+        "score": 75,
+        "tier": "tier2",
+        "bias": "center-right",
+        "type": "broadcast_news"
+    },
+    "sky.com": {
+        "score": 75,
+        "tier": "tier2",
+        "bias": "center-right",
+        "type": "broadcast_news"
+    },
+    "news.com.au": {
+        "score": 70,
+        "tier": "tier2",
+        "bias": "center-right",
+        "type": "tabloid_news"
+    },
+    "aljazeera.com": {
+        "score": 74,
+        "tier": "tier2",
+        "bias": "center",
+        "type": "international_news"
+    },
+    "thehindu.com": {
+        "score": 78,
+        "tier": "tier2",
+        "bias": "center-left",
+        "type": "established_news"
+    },
+    "hindustantimes.com": {
+        "score": 72,
+        "tier": "tier2",
+        "bias": "center",
+        "type": "established_news"
+    },
+    "indianexpress.com": {
+        "score": 75,
+        "tier": "tier2",
+        "bias": "center-left",
+        "type": "established_news"
+    },
+    "indiatoday.in": {
+        "score": 70,
+        "tier": "tier2",
+        "bias": "center",
+        "type": "established_news"
+    },
+    "ndtv.com": {
+        "score": 73,
+        "tier": "tier2",
+        "bias": "center-left",
+        "type": "broadcast_news"
+    },
+    "bloomberg.com": {
+        "score": 88,
+        "tier": "tier2",
+        "bias": "center",
+        "type": "financial_news"
+    },
+    "forbes.com": {
+        "score": 76,
+        "tier": "tier2",
+        "bias": "center-right",
+        "type": "business_news"
+    },
+    "businessinsider.com": {
+        "score": 71,
+        "tier": "tier2",
+        "bias": "center",
+        "type": "business_news"
+    },
+    "finance.yahoo.com": {
+        "score": 70,
+        "tier": "tier2",
+        "bias": "center",
+        "type": "financial_news"
+    },
+    "livemint.com": {
+        "score": 72,
+        "tier": "tier2",
+        "bias": "center",
+        "type": "financial_news"
+    },
     
-    # Tier 4: Low Credibility (0-39)
-    "infowars.com": {"score": 10, "tier": "tier4", "bias": "extreme-right", "type": "conspiracy"},
-    "naturalnews.com": {"score": 15, "tier": "tier4", "bias": "extreme-right", "type": "conspiracy"},
-    "breitbart.com": {"score": 35, "tier": "tier4", "bias": "extreme-right", "type": "partisan"},
+    # TIER 3: MIXED RELIABILITY (40-69)
+    "foxnews.com": {
+        "score": 62,
+        "tier": "tier3",
+        "bias": "right",
+        "type": "partisan_news"
+    },
+    "newsweek.com": {
+        "score": 65,
+        "tier": "tier3",
+        "bias": "center-left",
+        "type": "news_magazine"
+    },
+    "politico.com": {
+        "score": 68,
+        "tier": "tier3",
+        "bias": "center-left",
+        "type": "political_news"
+    },
+    "nypost.com": {
+        "score": 52,
+        "tier": "tier3",
+        "bias": "right",
+        "type": "tabloid"
+    },
+    "dailymail.co.uk": {
+        "score": 55,
+        "tier": "tier3",
+        "bias": "right",
+        "type": "tabloid"
+    },
+    "thesun.co.uk": {
+        "score": 48,
+        "tier": "tier3",
+        "bias": "right",
+        "type": "tabloid"
+    },
+    "mirror.co.uk": {
+        "score": 50,
+        "tier": "tier3",
+        "bias": "left",
+        "type": "tabloid"
+    },
+    "buzzfeed.com": {
+        "score": 58,
+        "tier": "tier3",
+        "bias": "center-left",
+        "type": "digital_news"
+    },
+    "people.com": {
+        "score": 45,
+        "tier": "tier3",
+        "bias": "center",
+        "type": "entertainment"
+    },
+    "indiatimes.com": {
+        "score": 58,
+        "tier": "tier3",
+        "bias": "center",
+        "type": "news_portal"
+    },
+    "news18.com": {
+        "score": 60,
+        "tier": "tier3",
+        "bias": "center-right",
+        "type": "news_portal"
+    },
+    "oneindia.com": {
+        "score": 55,
+        "tier": "tier3",
+        "bias": "center",
+        "type": "news_portal"
+    },
+    "india.com": {
+        "score": 52,
+        "tier": "tier3",
+        "bias": "center",
+        "type": "news_portal"
+    },
+    "rediff.com": {
+        "score": 54,
+        "tier": "tier3",
+        "bias": "center",
+        "type": "news_portal"
+    },
+    "substack.com": {
+        "score": 60,
+        "tier": "tier3",
+        "bias": "varies",
+        "type": "platform"
+    },
+    
+    # TIER 4: LOW CREDIBILITY (0-39)
+    "rt.com": {
+        "score": 25,
+        "tier": "tier4",
+        "bias": "extreme-right",
+        "type": "state_propaganda"
+    },
+    "drudgereport.com": {
+        "score": 38,
+        "tier": "tier4",
+        "bias": "right",
+        "type": "aggregator"
+    },
+    
+    # AGGREGATORS (Special handling)
+    "news.yahoo.com": {
+        "score": 65,
+        "tier": "aggregator",
+        "bias": "varies",
+        "type": "aggregator"
+    },
+    "msn.com": {
+        "score": 65,
+        "tier": "aggregator",
+        "bias": "varies",
+        "type": "aggregator"
+    },
+    "news.google.com": {
+        "score": 70,
+        "tier": "aggregator",
+        "bias": "varies",
+        "type": "aggregator"
+    },
 }
 
 # ============================================================================
-# CONTENT ANALYSIS RED FLAGS
+# RED FLAG PATTERNS
 # ============================================================================
 
-CONTENT_RED_FLAGS = {
-    "gossip_language": {
+RED_FLAG_PATTERNS = {
+    "gossip": {
         "patterns": [
-            r"\bsources?\s+(?:say|claim|reveal|told)\b",
-            r"\binsiders?\s+(?:claim|say|reveal)\b",
-            r"\ballegedly\b",
-            r"\breportedly\b",
-            r"\brumored\b",
-            r"\bwhispers\b",
+            r"sources? (?:say|claim|tell|told)",
+            r"insiders? (?:say|claim|reveal)",
+            r"according to (?:sources?|insiders?)",
+            r"rumor(?:s|ed)?",
+            r"allegedly",
+            r"unconfirmed",
         ],
-        "penalty": 5,
+        "penalty": 15,
         "label": "gossip/unverified sources"
     },
-    "sensational_language": {
+    "sensational": {
         "patterns": [
-            r"\bshocking\b",
-            r"\bexplosive\b",
-            r"\bbombshell\b",
-            r"\bstunning\b",
-            r"\bslams?\b",
-            r"\bblasts?\b",
-            r"\b(?:forces?|threatens?)\b",
-            r"\bdevastating\b",
+            r"shocking",
+            r"explosive",
+            r"bombshell",
+            r"jaw-dropping",
+            r"stunning",
+            r"unbelievable",
         ],
-        "penalty": 3,
+        "penalty": 6,
         "label": "sensational language"
     },
     "speculation": {
         "patterns": [
-            r"\b(?:could|might|may)\s+have\b",
-            r"\bappears?\s+to\b",
-            r"\bseems?\s+to\b",
-            r"\bpossibly\b",
-            r"\bpotentially\b",
+            r"may have",
+            r"could be",
+            r"might be",
+            r"possibly",
+            r"potentially",
+            r"speculation",
         ],
-        "penalty": 2,
+        "penalty": 4,
         "label": "speculative claims"
     },
     "clickbait": {
         "patterns": [
-            r"\byou\s+won'?t\s+believe\b",
-            r"\bwhat\s+happens?\s+next\b",
-            r"\bshock(?:ing)?\b.*\b(?:revelation|truth)\b",
-            r"\bthe\s+truth\s+about\b",
+            r"you (?:won't believe|need to see)",
+            r"what happens next",
+            r"will shock you",
+            r"the truth about",
+        ],
+        "penalty": 10,
+        "label": "clickbait"
+    },
+    "anonymous": {
+        "patterns": [
+            r"anonymous (?:official|source)",
+            r"undisclosed source",
+            r"we have learned",
+            r"exclusive report",
         ],
         "penalty": 8,
-        "label": "clickbait phrasing"
+        "label": "vague attribution"
     }
 }
 
-def analyze_content_quality(text: str, title: str = "") -> Dict:
+# ============================================================================
+# HELPER FUNCTIONS
+# ============================================================================
+
+def extract_domain(url: str) -> str:
+    """Extract domain from URL"""
+    from urllib.parse import urlparse
+    parsed = urlparse(url)
+    domain = parsed.netloc.lower()
+    # Remove www.
+    if domain.startswith('www.'):
+        domain = domain[4:]
+    return domain
+
+
+def get_source_credibility(domain: str, has_corroboration: bool = False) -> Dict:
     """
-    Analyze article content for red flags
-    Returns quality score and detailed reasoning
+    Check source credibility from database
+    IMPROVED: Penalize unknown sources without corroboration
     """
-    combined_text = f"{title} {text}".lower()
     
-    red_flags_found = []
-    total_penalty = 0
-    flag_details = []
-    
-    for category, config in CONTENT_RED_FLAGS.items():
-        matches = []
-        for pattern in config["patterns"]:
-            found = re.findall(pattern, combined_text, re.IGNORECASE)
-            matches.extend(found)
+    if domain in SOURCE_CREDIBILITY:
+        source = SOURCE_CREDIBILITY[domain]
         
-        if matches:
-            count = len(matches)
-            penalty = config["penalty"] * min(count, 3)  # Cap at 3 occurrences
-            total_penalty += penalty
-            
-            red_flags_found.append(config["label"])
-            flag_details.append({
-                "category": category,
-                "label": config["label"],
-                "count": count,
-                "penalty": penalty,
-                "examples": matches[:2]  # Show first 2 examples
-            })
+        verdict = f"a {source['tier']} source ({source['type']}) with {source['bias']} bias"
+        if source['tier'] == 'tier1':
+            verdict = "a highly credible, well-established news source"
+        
+        return {
+            "known_source": True,
+            "credibility_score": source["score"],
+            "bias": source["bias"],
+            "tier": source["tier"],
+            "type": source["type"],
+            "verdict": verdict
+        }
     
-    # Calculate quality score (100 - penalties)
-    quality_score = max(30, 100 - total_penalty)  # Minimum 30
-    
-    # Generate reasoning
-    if red_flags_found:
-        reasoning = f"Content contains: {', '.join(red_flags_found)}. "
-        if total_penalty > 15:
-            reasoning += "Multiple quality issues detected."
-        elif total_penalty > 8:
-            reasoning += "Some reliability concerns."
+    # CRITICAL: Unknown source without corroboration is suspicious!
+    if has_corroboration:
+        score = 60
+        verdict = "an unknown source (corroborated by other sources)"
     else:
-        reasoning = "Content appears factual with standard journalistic language."
+        score = 35  # Harsh penalty!
+        verdict = "an unknown source (NOT corroborated - highly suspicious)"
     
     return {
-        "quality_score": quality_score,
-        "red_flags": red_flags_found,
-        "penalty": total_penalty,
-        "reasoning": reasoning,
-        "details": flag_details
+        "known_source": False,
+        "credibility_score": score,
+        "bias": "unknown",
+        "tier": "unknown",
+        "type": "unknown",
+        "verdict": verdict
     }
 
-# ============================================================================
-# IMAGE SELECTION & FILTERING
-# ============================================================================
 
-def filter_article_images(images: List[str], max_images: int = 3) -> List[str]:
+def analyze_content_quality(text: str, images: List[str]) -> Dict:
+    """Analyze content for red flags and check images"""
+    
+    red_flags = []
+    total_penalty = 0
+    details = []
+    
+    text_lower = text.lower()
+    
+    # Check each red flag pattern
+    for flag_type, config in RED_FLAG_PATTERNS.items():
+        for pattern in config["patterns"]:
+            if re.search(pattern, text_lower):
+                red_flags.append(config["label"])
+                total_penalty += config["penalty"]
+                details.append(f"Found {config['label']}: matched pattern '{pattern}'")
+                break  # Only count once per flag type
+    
+    # Check images for AI generation
+    image_scores = []
+    if images and SIGHTENGINE_USER and SIGHTENGINE_SECRET:
+        for img_url in images[:3]:  # Max 3 images
+            try:
+                response = requests.get(
+                    'https://api.sightengine.com/1.0/check.json',
+                    params={
+                        'url': img_url,
+                        'models': 'genai',
+                        'api_user': SIGHTENGINE_USER,
+                        'api_secret': SIGHTENGINE_SECRET
+                    },
+                    timeout=5
+                )
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    if 'type' in data and 'ai_generated' in data['type']:
+                        ai_prob = data['type']['ai_generated']
+                        human_prob = 100 - ai_prob
+                        image_scores.append(human_prob)
+                        details.append(f"Image analysis: {human_prob:.0f}% authentic")
+            except:
+                pass
+    
+    # Calculate quality score
+    base_score = 100
+    content_score = max(0, base_score - total_penalty)
+    
+    # Average in image scores if available
+    if image_scores:
+        avg_image_score = sum(image_scores) / len(image_scores)
+        content_score = (content_score + avg_image_score) / 2
+    
+    reasoning = f"Content appears {'factual with standard journalistic language' if content_score >= 80 else 'to have quality issues'}."
+    if red_flags:
+        reasoning += f" Content contains: {', '.join(set(red_flags))}."
+    if image_scores:
+        reasoning += f" Images: {int(sum(image_scores)/len(image_scores))}% authentic."
+    
+    return {
+        "quality_score": int(content_score),
+        "red_flags": list(set(red_flags)),
+        "penalty": total_penalty,
+        "details": details,
+        "reasoning": reasoning
+    }
+
+
+def extract_search_terms(title: str, content: str) -> str:
     """
-    Filter out logos, icons, headers - keep actual article images
+    Extract key search terms for cross-reference
+    IMPROVED: Smart extraction instead of full title
     """
-    # Patterns to skip
-    skip_patterns = [
-        'logo', 'icon', 'header', 'footer', 'banner',
-        'facebook', 'twitter', 'linkedin', 'instagram',
-        'social', 'share', 'sitelog', 'avatar',
-        'ads', 'advertisement', 'promo'
+    
+    text = f"{title} {content[:500]}"
+    important_terms = []
+    
+    # Extract capitalized words (likely proper nouns)
+    words = text.split()
+    for word in words:
+        # Skip common words
+        if word.lower() in ['the', 'a', 'an', 'in', 'on', 'at', 'to', 'for', 'of', 'and', 'or', 'live', 'news']:
+            continue
+        
+        # If starts with capital and >3 chars, it's likely important
+        if word and word[0].isupper() and len(word) > 3:
+            clean_word = word.strip('.,;:!?"\'')
+            if clean_word and clean_word.lower() not in ['live', 'news', 'report', 'says', 'video']:
+                important_terms.append(clean_word)
+    
+    # Remove duplicates, keep top 5
+    unique_terms = list(dict.fromkeys(important_terms))[:5]
+    search_query = ' '.join(unique_terms)
+    
+    return search_query if search_query else title[:100]
+
+
+def classify_story_type(content: str, title: str) -> str:
+    """
+    Classify story type for context-aware scoring
+    """
+    
+    text = (title + " " + content).lower()
+    
+    # Major breaking news signals
+    major_signals = [
+        "president", "prime minister", "election", "resign",
+        "earthquake", "hurricane", "attack", "explosion",
+        "crash", "disaster", "stock market crash"
     ]
+    if any(signal in text for signal in major_signals):
+        return "major_breaking"
     
-    # Filter images
-    article_images = []
-    for img in images:
-        img_lower = img.lower()
-        
-        # Skip if matches any pattern
-        if any(pattern in img_lower for pattern in skip_patterns):
-            continue
-        
-        # Skip if tiny (likely icon)
-        if any(size in img_lower for size in ['16x16', '32x32', '48x48', '64x64']):
-            continue
-        
-        # Skip SVG files (usually logos)
-        if img_lower.endswith('.svg'):
-            continue
-        
-        article_images.append(img)
+    # Exclusive/investigative signals
+    exclusive_signals = [
+        "exclusive", "investigation", "obtained documents",
+        "uncovered", "reveals for the first time", "whistleblower"
+    ]
+    if any(signal in text for signal in exclusive_signals):
+        return "investigative_exclusive"
     
-    # Return first N images
-    return article_images[:max_images]
+    # Local news signals
+    local_signals = [
+        "city council", "local", "town", "community",
+        "school board", "county", "neighborhood"
+    ]
+    if any(signal in text for signal in local_signals):
+        return "local_news"
+    
+    # Opinion signals
+    opinion_signals = [
+        "opinion", "editorial", "commentary", "op-ed",
+        "i believe", "i think", "my view"
+    ]
+    if any(signal in text for signal in opinion_signals):
+        return "opinion"
+    
+    return "standard"
 
-# ============================================================================
-# IMAGE AI DETECTION (SightEngine)
-# ============================================================================
 
-async def check_image_ai_sightengine(image_url: str) -> Dict:
-    """Check if image is AI-generated using SightEngine"""
+def cross_reference_via_newsapi(search_query: str, domain: str) -> Dict:
+    """Cross-reference using NewsAPI"""
+    
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.get(
-                "https://api.sightengine.com/1.0/check.json",
-                params={
-                    "models": "genai",
-                    "api_user": SIGHTENGINE_USER,
-                    "api_secret": SIGHTENGINE_SECRET,
-                    "url": image_url
-                }
-            )
-            
-            print(f"👁️ SightEngine response: {response.json()}")
-            
-            if response.status_code == 200:
-                data = response.json()
-                if data.get("status") == "success":
-                    ai_score = data.get("type", {}).get("ai_generated", 0)
-                    human_score = int((1 - ai_score) * 100)
-                    
-                    print(f"✅ SightEngine: {human_score}% human ({int(ai_score * 100)}% AI)")
-                    
-                    return {
-                        "provider": "SightEngine",
-                        "ai_probability": ai_score,
-                        "human_probability": 1 - ai_score,
-                        "verdict": "AI-generated" if ai_score > 0.5 else "Likely human",
-                        "confidence": abs(ai_score - 0.5) * 2
-                    }
-            
-            print(f"⚠️ SightEngine error: {response.status_code}")
-            print(f"⚠️ Response: {response.text}")
-            return None
-            
-    except Exception as e:
-        print(f"❌ SightEngine exception: {e}")
-        return None
-
-# ============================================================================
-# CROSS-REFERENCE CHECKING
-# ============================================================================
-
-async def cross_reference_story(title: str, domain: str) -> Dict:
-    """Cross-reference story with News API"""
-    if not NEWS_API_KEY:
-        return {
-            "checked": False,
-            "corroboration_score": 50,
-            "verdict": "Cross-reference unavailable",
-            "num_sources": 0
+        url = "https://newsapi.org/v2/everything"
+        params = {
+            "q": search_query,
+            "apiKey": NEWS_API_KEY,
+            "language": "en",
+            "sortBy": "relevancy",
+            "pageSize": 20,
+            "from": (datetime.now() - timedelta(days=7)).isoformat(),
         }
-    
-    try:
-        # Use first 100 chars of title
-        query = title[:100]
         
-        print(f"🔍 Cross-referencing story...")
+        response = requests.get(url, params=params, timeout=10)
         
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            response = await client.get(
-                "https://newsapi.org/v2/everything",
-                params={
-                    "q": query,
-                    "apiKey": NEWS_API_KEY,
-                    "pageSize": 20,
-                    "sortBy": "relevancy"
-                }
-            )
+        if response.status_code != 200:
+            print(f"❌ NewsAPI error: {response.status_code}")
+            return {"sources_found": 0, "score": 10, "sources": []}
+        
+        data = response.json()
+        
+        if data.get("status") == "error":
+            print(f"❌ NewsAPI error: {data.get('message')}")
+            return {"sources_found": 0, "score": 10, "sources": []}
+        
+        articles = data.get("articles", [])
+        
+        # Filter out same domain
+        base_domain = domain.split('.')[-2] if '.' in domain else domain
+        unique_sources = set()
+        
+        for article in articles:
+            article_domain = article.get("source", {}).get("name", "")
+            article_url = article.get("url", "")
             
-            if response.status_code == 200:
-                data = response.json()
-                articles = data.get("articles", [])
-                
-                # Count unique sources (excluding original domain)
-                unique_sources = set()
-                for article in articles:
-                    source_name = article.get("source", {}).get("name", "")
-                    article_domain = article.get("url", "")
-                    
-                    # Skip same domain
-                    if domain not in article_domain:
-                        unique_sources.add(source_name)
-                
-                num_sources = len(unique_sources)
-                
-                # Score based on corroboration
-                if num_sources >= 5:
-                    score = 95
-                    verdict = "Widely corroborated"
-                elif num_sources >= 3:
-                    score = 80
-                    verdict = "Multiple sources confirm"
-                elif num_sources >= 1:
-                    score = 60
-                    verdict = "Some corroboration"
-                else:
-                    score = 10
-                    verdict = "No corroborating sources found"
-                
-                return {
-                    "checked": True,
-                    "corroboration_score": score,
-                    "verdict": verdict,
-                    "num_sources": num_sources,
-                    "reasoning": f"Found {num_sources} independent sources reporting similar story"
-                }
+            if base_domain.lower() not in article_url.lower():
+                unique_sources.add(article_domain)
+        
+        num_sources = len(unique_sources)
+        
+        # Score based on number
+        if num_sources >= 5:
+            score = 95
+        elif num_sources >= 3:
+            score = 85
+        elif num_sources >= 2:
+            score = 70
+        elif num_sources == 1:
+            score = 50
+        else:
+            score = 10
         
         return {
-            "checked": True,
-            "corroboration_score": 10,
-            "verdict": "Cross-reference failed",
-            "num_sources": 0,
-            "reasoning": "Unable to verify with external sources"
+            "sources_found": num_sources,
+            "score": score,
+            "sources": list(unique_sources)[:10]
         }
         
     except Exception as e:
-        print(f"❌ Cross-reference error: {e}")
-        return {
-            "checked": False,
-            "corroboration_score": 50,
-            "verdict": "Cross-reference unavailable",
-            "num_sources": 0,
-            "reasoning": "Cross-reference service unavailable"
-        }
+        print(f"❌ NewsAPI exception: {str(e)}")
+        return {"sources_found": 0, "score": 10, "sources": []}
 
-# ============================================================================
-# NEWS VERIFICATION (MAIN FUNCTION)
-# ============================================================================
 
-async def verify_news_article(url: str) -> Dict:
+def cross_reference_via_google_news(search_query: str) -> Dict:
     """
-    Verify news article credibility
-    Multi-factor: Source (50%) + Content Quality (30%) + Cross-ref (20%)
+    Backup cross-reference using Google News RSS
+    FREE, no API key needed!
     """
-    print(f"\n🗞️ Starting news verification for: {url}")
-    print("=" * 60)
     
     try:
-        # Extract article
-        print(f"📰 Extracting article from: {url}")
-        article = Article(url)
-        article.download()
-        article.parse()
+        url = f"https://news.google.com/rss/search?q={search_query}&hl=en-US&gl=US&ceid=US:en"
+        feed = feedparser.parse(url)
         
-        domain = article.source_url.replace("http://", "").replace("https://", "").replace("www.", "").split("/")[0]
+        unique_sources = set()
+        for entry in feed.entries[:20]:
+            source = entry.get('source', {}).get('title', '')
+            if source:
+                unique_sources.add(source)
         
-        print(f"✅ Extracted: {len(article.text)} chars, {len(article.images)} images")
+        num_sources = len(unique_sources)
         
-        # 1. Check source credibility (50% weight)
-        print(f"🔍 Checking source credibility: {domain}")
-        source_info = SOURCE_CREDIBILITY.get(domain, {
-            "score": 50,
-            "tier": "unknown",
-            "bias": "unknown",
-            "type": "unknown"
-        })
-        
-        source_score = source_info["score"]
-        is_known = domain in SOURCE_CREDIBILITY
-        
-        if is_known:
-            print(f"✅ Found in database: {source_score}/100 ({source_info['tier']})")
-            source_reasoning = f"{domain} is a {source_info['tier']} source ({source_info['type']}) with {source_info['bias']} bias"
-        else:
-            print(f"⚠️ Unknown source: {domain} (defaulting to 50/100)")
-            source_reasoning = f"Unknown source. No credibility data available for {domain}"
-        
-        # 2. Analyze content quality (30% weight)
-        print(f"📝 Analyzing content quality...")
-        content_analysis = analyze_content_quality(article.text, article.title)
-        content_score = content_analysis["quality_score"]
-        content_reasoning = content_analysis["reasoning"]
-        
-        print(f"📊 Content quality: {content_score}/100")
-        if content_analysis["red_flags"]:
-            print(f"🚩 Red flags: {', '.join(content_analysis['red_flags'])}")
-        
-        # 3. Check images (included in content quality)
-        filtered_images = filter_article_images(list(article.images))
-        print(f"🖼️ Checking {len(filtered_images)} article images (filtered from {len(article.images)})")
-        
-        image_results = []
-        image_scores = []
-        
-        for img_url in filtered_images[:3]:  # Max 3 images
-            print(f"👁️ Calling SightEngine (URL)...")
-            result = await check_image_ai_sightengine(img_url)
-            if result:
-                image_results.append({
-                    "url": img_url,
-                    "provider": result["provider"],
-                    "verdict": result["verdict"],
-                    "ai_probability": result["ai_probability"],
-                    "human_probability": result["human_probability"]
-                })
-                # Convert to score (human probability = good)
-                img_score = int(result["human_probability"] * 100)
-                image_scores.append(img_score)
-        
-        # Average image score
-        avg_image_score = int(sum(image_scores) / len(image_scores)) if image_scores else 85
-        
-        # Combine content text + images
-        combined_content_score = int(content_score * 0.6 + avg_image_score * 0.4)
-        
-        # 4. Cross-reference (20% weight) - OPTIONAL
-        cross_ref = await cross_reference_story(article.title, domain)
-        cross_ref_score = cross_ref["corroboration_score"]
-        
-        # ==================================================================
-        # SMART WEIGHTING: If cross-ref finds nothing, redistribute weight
-        # ==================================================================
-        if cross_ref["num_sources"] == 0:
-            print("⚠️ Cross-reference found no sources - redistributing weight")
-            # Redistribute 20% weight proportionally
-            source_weight = 62.5  # 50 + (20 * 0.625)
-            content_weight = 37.5  # 30 + (20 * 0.375)
-            cross_ref_weight = 0
-            
-            final_score = int(
-                (source_score * source_weight / 100) +
-                (combined_content_score * content_weight / 100)
-            )
-        else:
-            # Normal weighting
-            source_weight = 50
-            content_weight = 30
-            cross_ref_weight = 20
-            
-            final_score = int(
-                (source_score * 0.50) +
-                (combined_content_score * 0.30) +
-                (cross_ref_score * 0.20)
-            )
-        
-        # Generate final explanation
-        tier_explanations = {
-            "tier1": "a highly credible, well-established news source",
-            "tier2": "a generally credible news source",
-            "tier3": "a mixed-reliability source (tabloid or partisan)",
-            "tier4": "a low-credibility source",
-            "unknown": "an unknown source with no credibility data"
+        return {
+            "sources_found": num_sources,
+            "score": min(num_sources * 20, 100),
+            "sources": list(unique_sources)
         }
         
-        tier_desc = tier_explanations.get(source_info["tier"], "an unknown source")
+    except Exception as e:
+        print(f"❌ Google News error: {str(e)}")
+        return {"sources_found": 0, "score": 10, "sources": []}
+
+
+def smart_cross_reference(title: str, content: str, domain: str, source_tier: str) -> Dict:
+    """
+    SMART cross-reference with story type detection and context-aware scoring
+    """
+    
+    # Classify story type
+    story_type = classify_story_type(content, title)
+    
+    # Extract smart search terms
+    search_query = extract_search_terms(title, content)
+    
+    print(f"🔍 Cross-reference:")
+    print(f"   Story type: {story_type}")
+    print(f"   Search: '{search_query}'")
+    
+    # Try NewsAPI first
+    result = cross_reference_via_newsapi(search_query, domain)
+    
+    # If no results, try Google News backup
+    if result["sources_found"] == 0:
+        print("⚠️ NewsAPI found nothing, trying Google News...")
+        result = cross_reference_via_google_news(search_query)
+    
+    num_sources = result["sources_found"]
+    print(f"   Found: {num_sources} sources")
+    if result.get("sources"):
+        print(f"   Sources: {', '.join(result['sources'][:5])}")
+    
+    # Score based on story type
+    if story_type == "major_breaking":
+        # Major news MUST be corroborated
+        if num_sources >= 5:
+            score = 95
+            reasoning = f"Major news story corroborated by {num_sources} independent sources"
+        elif num_sources >= 3:
+            score = 85
+            reasoning = f"Major news story corroborated by {num_sources} sources"
+        elif num_sources >= 1:
+            score = 50
+            reasoning = f"Major news with limited corroboration ({num_sources} source)"
+        else:
+            score = 15
+            reasoning = "⚠️ Major news claim with NO corroboration - highly suspicious!"
+        weight = "30%"
         
-        explanation_parts = [
-            f"This article is from {tier_desc}."
+    elif story_type == "investigative_exclusive":
+        # Exclusives don't need corroboration - trust the source
+        if source_tier == "tier1":
+            score = 90
+            reasoning = "Exclusive investigation by tier1 source"
+        elif source_tier == "tier2":
+            score = 75
+            reasoning = "Exclusive investigation by tier2 source"
+        elif source_tier == "tier3":
+            score = 45
+            reasoning = "Exclusive claim by tier3 source"
+        else:
+            score = 25
+            reasoning = "Exclusive claim by unknown source"
+        weight = "15%"
+        
+    elif story_type == "local_news":
+        # Local news won't have national coverage
+        if source_tier in ["tier1", "tier2"]:
+            score = 80
+            reasoning = "Local story from credible source (corroboration not expected)"
+        elif source_tier == "tier3":
+            score = 60
+            reasoning = "Local story from known source"
+        else:
+            score = 50
+            reasoning = "Local story from unknown source"
+        weight = "10%"
+        
+    elif story_type == "opinion":
+        # Opinions don't need corroboration
+        if source_tier in ["tier1", "tier2"]:
+            score = 85
+            reasoning = "Opinion piece from credible outlet (subjective content)"
+        elif source_tier == "tier3":
+            score = 60
+            reasoning = "Opinion piece from known outlet"
+        else:
+            score = 50
+            reasoning = "Opinion piece from unknown source"
+        weight = "5%"
+        
+    else:  # standard
+        # Standard news - moderate corroboration expectation
+        if num_sources >= 3:
+            score = 85
+            reasoning = f"Story corroborated by {num_sources} independent sources"
+        elif num_sources >= 1:
+            score = 65
+            reasoning = f"Story corroborated by {num_sources} other source"
+        else:
+            if source_tier in ["tier1", "tier2"]:
+                score = 55
+                reasoning = "No corroboration found, but source is credible"
+            elif source_tier == "tier3":
+                score = 35
+                reasoning = "No corroboration from lower-tier source"
+            else:
+                score = 20
+                reasoning = "No corroboration from unknown source"
+        weight = "25%"
+    
+    return {
+        "score": score,
+        "weight": weight,
+        "reasoning": reasoning,
+        "story_type": story_type,
+        "sources_found": num_sources,
+        "sources": result.get("sources", [])
+    }
+
+
+def calculate_final_score(source_cred: Dict, content_qual: Dict, cross_ref: Dict) -> Dict:
+    """
+    Calculate final weighted score with dynamic weights based on story type
+    """
+    
+    story_type = cross_ref.get("story_type", "standard")
+    
+    # Dynamic weights based on story type
+    if story_type == "major_breaking":
+        weights = {"source": 0.35, "content": 0.35, "cross_ref": 0.30}
+    elif story_type == "investigative_exclusive":
+        weights = {"source": 0.60, "content": 0.25, "cross_ref": 0.15}
+    elif story_type == "local_news":
+        weights = {"source": 0.50, "content": 0.40, "cross_ref": 0.10}
+    elif story_type == "opinion":
+        weights = {"source": 0.55, "content": 0.40, "cross_ref": 0.05}
+    else:  # standard
+        weights = {"source": 0.40, "content": 0.35, "cross_ref": 0.25}
+    
+    final = (
+        source_cred["credibility_score"] * weights["source"] +
+        content_qual["quality_score"] * weights["content"] +
+        cross_ref["score"] * weights["cross_ref"]
+    )
+    
+    score = round(final)
+    
+    # Determine label
+    if score >= 90:
+        label = "Highly Credible"
+    elif score >= 70:
+        label = "Credible"
+    elif score >= 50:
+        label = "Probably Credible"
+    elif score >= 30:
+        label = "Mixed Reliability"
+    else:
+        label = "Low Credibility"
+    
+    # Generate explanation
+    explanation = f"This article is from {source_cred['verdict']}."
+    if content_qual['red_flags']:
+        explanation += f" Content quality issues detected: {', '.join(content_qual['red_flags'])}."
+    if cross_ref['sources_found'] > 0:
+        explanation += f" Story is corroborated by {cross_ref['sources_found']} independent sources."
+    elif story_type in ["investigative_exclusive", "local_news", "opinion"]:
+        explanation += f" As a {story_type.replace('_', ' ')}, corroboration is not expected."
+    else:
+        explanation += " No independent corroboration found."
+    
+    return {
+        "score": score,
+        "label": label,
+        "explanation": explanation,
+        "confidence": "High" if source_cred["known_source"] else "Moderate",
+        "recommended_action": "Trust with caution and verify key claims" if score >= 50 else "Verify from multiple trusted sources before sharing",
+        "methodology": f"Multi-factor weighted ensemble (Source: {weights['source']*100:.0f}%, Content: {weights['content']*100:.0f}%, Cross-ref: {weights['cross_ref']*100:.0f}%)",
+        "scoring_factors": [
+            {
+                "factor": "Source Credibility",
+                "score": source_cred["credibility_score"],
+                "weight": f"{weights['source']*100:.0f}%",
+                "reasoning": f"{source_cred['verdict']}"
+            },
+            {
+                "factor": "Content Quality",
+                "score": content_qual["quality_score"],
+                "weight": f"{weights['content']*100:.0f}%",
+                "reasoning": content_qual["reasoning"]
+            },
+            {
+                "factor": "Cross-Reference",
+                "score": cross_ref["score"],
+                "weight": f"{weights['cross_ref']*100:.0f}%",
+                "reasoning": cross_ref["reasoning"]
+            }
         ]
-        
-        # Add content quality explanation
-        if content_analysis["red_flags"]:
-            explanation_parts.append(f"Content analysis found: {', '.join(content_analysis['red_flags'])}.")
-        else:
-            explanation_parts.append("Content appears factual with standard journalistic language.")
-        
-        # Add cross-ref explanation
-        if cross_ref["num_sources"] > 0:
-            explanation_parts.append(f"Story corroborated by {cross_ref['num_sources']} independent sources.")
-        elif cross_ref["checked"]:
-            explanation_parts.append("No independent corroboration found.")
-        
-        final_explanation = " ".join(explanation_parts)
-        
-        # Determine label
-        if final_score >= 80:
-            label = "Highly Credible"
-            confidence = "High"
-            action = "This article appears trustworthy."
-        elif final_score >= 60:
-            label = "Probably Credible"
-            confidence = "Moderate-High"
-            action = "This article is likely credible, but verify key claims."
-        elif final_score >= 40:
-            label = "Mixed Reliability"
-            confidence = "Moderate"
-            action = "Approach with caution. Verify claims from other sources."
-        else:
-            label = "Low Credibility"
-            confidence = "Low"
-            action = "Be skeptical. Seek confirmation from credible sources."
-        
-        print("=" * 60)
-        print(f"📊 Final News Trust Score: {final_score}/100")
-        
-        return {
-            "trust_score": {
-                "score": final_score,
-                "label": label,
-                "explanation": final_explanation,
-                "confidence": confidence,
-                "recommended_action": action,
-                "scoring_factors": [
-                    {
-                        "factor": "Source Credibility",
-                        "score": source_score,
-                        "weight": f"{source_weight}%",
-                        "reasoning": source_reasoning
-                    },
-                    {
-                        "factor": "Content Quality",
-                        "score": combined_content_score,
-                        "weight": f"{content_weight}%",
-                        "reasoning": f"{content_reasoning} Images: {avg_image_score}% authentic."
-                    },
-                    {
-                        "factor": "Cross-Reference",
-                        "score": cross_ref_score,
-                        "weight": f"{cross_ref_weight}%",
-                        "reasoning": cross_ref.get("reasoning", cross_ref["verdict"])
-                    }
-                ],
-                "methodology": "Multi-factor weighted ensemble with content analysis"
-            },
-            "article": {
-                "title": article.title,
-                "domain": domain,
-                "author": ", ".join(article.authors) if article.authors else None,
-                "date": article.publish_date.isoformat() if article.publish_date else None,
-                "word_count": len(article.text.split())
-            },
-            "source_credibility": {
-                "known_source": is_known,
-                "credibility_score": source_score,
-                "bias": source_info.get("bias", "unknown"),
-                "tier": source_info.get("tier", "unknown"),
-                "type": source_info.get("type", "unknown"),
-                "verdict": tier_desc
-            },
-            "content_analysis": {
-                "quality_score": content_score,
-                "red_flags": content_analysis["red_flags"],
-                "penalty": content_analysis["penalty"],
-                "details": content_analysis["details"],
-                "images_checked": len(image_results),
-                "image_ai_detection": image_results
-            },
-            "cross_reference": cross_ref,
-            "metadata": {
-                "provider": "CrediSource News Engine",
-                "content_type": "news",
-                "version": "2.0-with-reasoning"
-            }
-        }
-        
-    except Exception as e:
-        print(f"❌ News verification error: {e}")
-        
-        # Handle specific errors
-        if "401" in str(e) or "403" in str(e):
-            return {
-                "error": f"Access denied: {domain} blocks automated access. This is common with Reuters and other sites with strict bot detection.",
-                "trust_score": {
-                    "score": 0,
-                    "label": "Error - Access Denied"
-                },
-                "recommendation": "Try accessing the article directly in your browser, or test with a different news source."
-            }
-        
-        return {
-            "error": f"Failed to verify article: {str(e)}",
-            "trust_score": {
-                "score": 0,
-                "label": "Error"
-            }
-        }
+    }
+
 
 # ============================================================================
 # CELERY TASK
 # ============================================================================
 
-@app.task(bind=True, name="credisource.verify_content")
-def verify_content(self, job_id: str, content: str, content_type: str):
+@app.task(bind=True)
+def verify_news_article(self, url: str) -> Dict:
     """
-    Main Celery task for content verification
-    
-    Args:
-        job_id: Unique job identifier
-        content: URL for news/images/videos, or text content for text verification
-        content_type: "news", "image", "video", or "text"
+    Main news verification task
     """
-    import asyncio
     
-    print(f"🔍 Processing job {job_id} for content (type: {content_type})")
+    print(f"\n{'='*60}")
+    print(f"🔍 VERIFYING: {url}")
+    print(f"{'='*60}\n")
     
-    if content_type == "news":
-        # Content is a URL
-        url = content
-        print(f"📰 News URL: {url}")
-        result = asyncio.run(verify_news_article(url))
-        print(f"✅ Completed job {job_id}: Score {result.get('trust_score', {}).get('score', 0)}")
+    try:
+        # Extract article
+        article = Article(url)
+        article.download()
+        article.parse()
+        
+        domain = extract_domain(url)
+        word_count = len(article.text.split())
+        article_images = article.images if hasattr(article, 'images') else []
+        
+        print(f"📰 Title: {article.title}")
+        print(f"🌐 Domain: {domain}")
+        print(f"📝 Word count: {word_count}\n")
+        
+        # 1. Check source credibility (we'll update after cross-ref)
+        print("1️⃣ CHECKING SOURCE CREDIBILITY...")
+        source_cred_initial = get_source_credibility(domain, False)
+        print(f"   Score: {source_cred_initial['credibility_score']}/100")
+        print(f"   Tier: {source_cred_initial['tier']}")
+        print(f"   Assessment: {source_cred_initial['verdict']}\n")
+        
+        # 2. Analyze content quality
+        print("2️⃣ ANALYZING CONTENT QUALITY...")
+        content_analysis = analyze_content_quality(article.text, list(article_images)[:3])
+        print(f"   Score: {content_analysis['quality_score']}/100")
+        print(f"   Red flags: {len(content_analysis['red_flags'])}")
+        if content_analysis['red_flags']:
+            for flag in content_analysis['red_flags']:
+                print(f"      🚩 {flag}")
+        print()
+        
+        # 3. Cross-reference (smart)
+        print("3️⃣ CROSS-REFERENCING STORY...")
+        cross_ref = smart_cross_reference(
+            article.title,
+            article.text,
+            domain,
+            source_cred_initial['tier']
+        )
+        print()
+        
+        # Update source credibility with corroboration info
+        has_corroboration = cross_ref['sources_found'] > 0
+        source_cred = get_source_credibility(domain, has_corroboration)
+        
+        # 4. Calculate final score
+        print("4️⃣ CALCULATING FINAL SCORE...")
+        trust_score = calculate_final_score(source_cred, content_analysis, cross_ref)
+        print(f"   Final Score: {trust_score['score']}/100")
+        print(f"   Label: {trust_score['label']}")
+        print(f"   Story Type: {cross_ref['story_type']}\n")
+        
+        # Build result
+        result = {
+            "trust_score": trust_score,
+            "source_credibility": {
+                "domain": domain,
+                "tier": source_cred["tier"],
+                "bias": source_cred["bias"],
+                "type": source_cred["type"],
+                "verdict": source_cred["verdict"]
+            },
+            "content_analysis": {
+                "red_flags": content_analysis["red_flags"],
+                "details": content_analysis["details"]
+            },
+            "cross_reference": {
+                "sources_found": cross_ref["sources_found"],
+                "sources": cross_ref.get("sources", [])[:5],
+                "story_type": cross_ref["story_type"]
+            },
+            "article": {
+                "title": article.title,
+                "author": article.authors[0] if article.authors else "Unknown",
+                "domain": domain,
+                "word_count": word_count
+            }
+        }
+        
+        print("✅ Verification complete!\n")
         return result
-    
-    elif content_type == "text":
-        # Content is text to verify
-        text = content
-        print(f"📝 Text content: {len(text)} characters")
-        # TODO: Implement text AI detection (Winston AI / Hugging Face)
-        return {"error": "Text verification not yet updated with reasoning"}
-    
-    elif content_type == "image":
-        # Content is image URL
-        url = content
-        print(f"🖼️ Image URL: {url}")
-        # TODO: Implement image AI detection with reasoning
-        return {"error": "Image verification not yet updated with reasoning"}
-    
-    elif content_type == "video":
-        # Content is video URL
-        url = content
-        print(f"🎥 Video URL: {url}")
-        # TODO: Implement video AI detection with reasoning
-        return {"error": "Video verification not yet updated with reasoning"}
-    
-    else:
-        return {"error": f"Unknown content type: {content_type}"}
+        
+    except Exception as e:
+        print(f"❌ Error: {str(e)}\n")
+        return {
+            "error": str(e),
+            "trust_score": {
+                "score": 0,
+                "label": "Error",
+                "explanation": f"Failed to verify article: {str(e)}"
+            }
+        }
+
 
 if __name__ == "__main__":
-    # For testing
-    import asyncio
-    
-    test_url = "https://www.bbc.co.uk/news/articles/c1m3zm9jnl1o"
-    result = asyncio.run(verify_news_article(test_url))
-    
-    import json
-    print(json.dumps(result, indent=2))
+    print("Celery worker ready!")
+    print(f"Sources in database: {len(SOURCE_CREDIBILITY)}")
+    print("Ready to verify news articles! 🚀")
