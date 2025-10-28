@@ -12,3 +12,5 @@ beautifulsoup4==4.12.2
 newspaper3k==0.2.8
 lxml[html_clean]==5.1.0
 nltk==3.8.1
+python-whois==0.8.0
+feedparser==6.0.10
