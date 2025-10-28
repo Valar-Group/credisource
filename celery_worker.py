@@ -1,1331 +1,606 @@
-from celery import Celery
+# celery_worker.py - Enhanced with Content Reasoning
+# CrediSource - AI Content Verification Platform
+
 import os
-import httpx
-import traceback
-import tempfile
-import json
-from bs4 import BeautifulSoup
-from urllib.parse import urlparse
 import re
+from celery import Celery
+from newspaper import Article
+import httpx
+from typing import Dict, List, Optional
 
-REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+# Initialize Celery
+redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+app = Celery("credisource", broker=redis_url, backend=redis_url)
 
-app = Celery(
-    'credisource',
-    broker=REDIS_URL,
-    backend=REDIS_URL
-)
-
-app.conf.update(
-    task_serializer='json',
-    accept_content=['json'],
-    result_serializer='json',
-    timezone='UTC',
-    enable_utc=True,
-)
-
-# API Keys from environment
+# API Keys
 AIORNOT_API_KEY = os.getenv("AIORNOT_API_KEY")
-SAPLING_API_KEY = os.getenv("SAPLING_API_KEY")
-GOOGLE_API_KEY = os.getenv("GOOGLE_SEARCH_API_KEY")
-GOOGLE_SEARCH_ENGINE_ID = os.getenv("GOOGLE_SEARCH_ENGINE_ID")
-HUGGINGFACE_API_KEY = os.getenv("HUGGINGFACE_API_KEY")
 WINSTON_API_KEY = os.getenv("WINSTON_API_KEY")
-NEWS_API_KEY = os.getenv("NEWS_API_KEY")
+SIGHTENGINE_USER = os.getenv("SIGHTENGINE_USER", "1740276646")
+SIGHTENGINE_SECRET = os.getenv("SIGHTENGINE_SECRET", "tBPjvP7aR8DajbWT2t2bgu2QJeP6FmvS")
+NEWS_API_KEY = os.getenv("NEWS_API_KEY", "9bffad84ca1c4fd6b4f167c5a74a0cb7")
+HUGGINGFACE_API_KEY = os.getenv("HUGGINGFACE_API_KEY")
 
-# SightEngine API Keys
-SIGHTENGINE_API_USER = os.getenv("SIGHTENGINE_API_USER")
-SIGHTENGINE_API_SECRET = os.getenv("SIGHTENGINE_API_SECRET")
-
-
-# ============================================================
-# YOUR PROPRIETARY SOURCE CREDIBILITY DATABASE
-# This is YOUR IP - Build and maintain this!
-# ============================================================
+# ============================================================================
+# SOURCE CREDIBILITY DATABASE (YOUR IP!)
+# ============================================================================
 
 SOURCE_CREDIBILITY = {
-    # Tier 1: Highly Trusted (90-100)
-    "bbc.com": {"score": 95, "bias": "center", "tier": "tier1", "type": "established_news"},
-    "bbc.co.uk": {"score": 95, "bias": "center", "tier": "tier1", "type": "established_news"},
-    "reuters.com": {"score": 98, "bias": "center", "tier": "tier1", "type": "wire_service"},
-    "apnews.com": {"score": 98, "bias": "center", "tier": "tier1", "type": "wire_service"},
-    "theguardian.com": {"score": 90, "bias": "center-left", "tier": "tier1", "type": "established_news"},
-    "nytimes.com": {"score": 92, "bias": "center-left", "tier": "tier1", "type": "established_news"},
-    "wsj.com": {"score": 92, "bias": "center-right", "tier": "tier1", "type": "established_news"},
-    "economist.com": {"score": 93, "bias": "center", "tier": "tier1", "type": "analysis"},
-    "npr.org": {"score": 91, "bias": "center-left", "tier": "tier1", "type": "public_media"},
+    # Tier 1: Highly Credible (90-100)
+    "reuters.com": {"score": 98, "tier": "tier1", "bias": "center", "type": "wire_service"},
+    "apnews.com": {"score": 98, "tier": "tier1", "bias": "center", "type": "wire_service"},
+    "bbc.co.uk": {"score": 95, "tier": "tier1", "bias": "center", "type": "established_news"},
+    "bbc.com": {"score": 95, "tier": "tier1", "bias": "center", "type": "established_news"},
+    "npr.org": {"score": 92, "tier": "tier1", "bias": "center-left", "type": "established_news"},
+    "economist.com": {"score": 92, "tier": "tier1", "bias": "center", "type": "established_news"},
+    "theguardian.com": {"score": 90, "tier": "tier1", "bias": "center-left", "type": "established_news"},
     
-    # Tier 2: Generally Reliable (70-89)
-    "cnn.com": {"score": 80, "bias": "left", "tier": "tier2", "type": "cable_news"},
-    "foxnews.com": {"score": 75, "bias": "right", "tier": "tier2", "type": "cable_news"},
-    "cbsnews.com": {"score": 85, "bias": "center-left", "tier": "tier2", "type": "broadcast_news"},
-    "nbcnews.com": {"score": 85, "bias": "center-left", "tier": "tier2", "type": "broadcast_news"},
-    "washingtonpost.com": {"score": 88, "bias": "center-left", "tier": "tier2", "type": "established_news"},
-    "bloomberg.com": {"score": 87, "bias": "center", "tier": "tier2", "type": "financial_news"},
-    "ft.com": {"score": 90, "bias": "center", "tier": "tier2", "type": "financial_news"},
+    # Tier 2: Generally Credible (70-89)
+    "nytimes.com": {"score": 88, "tier": "tier2", "bias": "center-left", "type": "established_news"},
+    "washingtonpost.com": {"score": 88, "tier": "tier2", "bias": "center-left", "type": "established_news"},
+    "wsj.com": {"score": 87, "tier": "tier2", "bias": "center-right", "type": "established_news"},
+    "cnn.com": {"score": 82, "tier": "tier2", "bias": "center-left", "type": "cable_news"},
+    "foxnews.com": {"score": 75, "tier": "tier2", "bias": "right", "type": "cable_news"},
+    "msnbc.com": {"score": 75, "tier": "tier2", "bias": "left", "type": "cable_news"},
+    "bloomberg.com": {"score": 85, "tier": "tier2", "bias": "center", "type": "business_news"},
     
-    # Tier 3: Mixed Reliability (50-69)
-    "dailymail.co.uk": {"score": 55, "bias": "right", "tier": "tier3", "type": "tabloid"},
-    "huffpost.com": {"score": 65, "bias": "left", "tier": "tier3", "type": "digital_news"},
-    "buzzfeed.com": {"score": 60, "bias": "left", "tier": "tier3", "type": "digital_news"},
-    "newsweek.com": {"score": 68, "bias": "center", "tier": "tier3", "type": "weekly_magazine"},
+    # Tier 3: Mixed Reliability (40-69)
+    "dailymail.co.uk": {"score": 55, "tier": "tier3", "bias": "right", "type": "tabloid"},
+    "nypost.com": {"score": 60, "tier": "tier3", "bias": "right", "type": "tabloid"},
+    "thesun.co.uk": {"score": 50, "tier": "tier3", "bias": "right", "type": "tabloid"},
+    "buzzfeed.com": {"score": 65, "tier": "tier3", "bias": "center-left", "type": "mixed_content"},
     
-    # Tier 4: Low Credibility (0-49)
-    "infowars.com": {"score": 10, "bias": "extreme-right", "tier": "tier4", "type": "conspiracy"},
-    "breitbart.com": {"score": 35, "bias": "extreme-right", "tier": "tier4", "type": "partisan"},
-    "naturalnews.com": {"score": 15, "bias": "extreme-right", "tier": "tier4", "type": "conspiracy"},
-    "rt.com": {"score": 30, "bias": "varies", "tier": "tier4", "type": "state_media"},
-    "presstv.ir": {"score": 25, "bias": "varies", "tier": "tier4", "type": "state_media"},
+    # Tier 4: Low Credibility (0-39)
+    "infowars.com": {"score": 10, "tier": "tier4", "bias": "extreme-right", "type": "conspiracy"},
+    "naturalnews.com": {"score": 15, "tier": "tier4", "bias": "extreme-right", "type": "conspiracy"},
+    "breitbart.com": {"score": 35, "tier": "tier4", "bias": "extreme-right", "type": "partisan"},
 }
 
+# ============================================================================
+# CONTENT ANALYSIS RED FLAGS
+# ============================================================================
 
-@app.task(name='credisource.test_task')
-def test_task():
-    return {"status": "Worker is running!"}
-
-@app.task(name='credisource.verify_content')
-def verify_content_task(job_id, url, content_type):
-    """Process verification job with REAL AI detection"""
-    
-    print(f"🔍 Processing job {job_id} for {url} (type: {content_type})")
-    
-    try:
-        # Run detection based on content type
-        if content_type in ['image', 'video']:
-            result = detect_image_video(url)
-        elif content_type == 'text':
-            result = detect_text(url)
-        elif content_type == 'news':
-            result = verify_news(url)
-        else:
-            result = {"error": "Unsupported content type"}
-        
-        print(f"✅ Completed job {job_id}: Score {result.get('trust_score', {}).get('score', 'N/A')}")
-        return result
-        
-    except Exception as e:
-        print(f"❌ Error in job {job_id}: {str(e)}")
-        return {
-            "job_id": job_id,
-            "status": "failed",
-            "error": str(e)
-        }
-
-@app.task(name='credisource.verify_content_file')
-def verify_content_file_task(job_id, file_base64, filename, content_type):
-    """Process verification job for uploaded files"""
-    
-    print(f"🔍 Processing uploaded file job {job_id}: {filename} (type: {content_type})")
-    
-    try:
-        import base64
-        
-        # Decode file from base64
-        file_data = base64.b64decode(file_base64)
-        print(f"📦 Decoded file: {len(file_data)} bytes")
-        
-        # Run detection based on content type
-        if content_type == 'image':
-            result = detect_image_video_from_data(file_data, filename)
-        elif content_type == 'video':
-            # Videos use the same detection as images (AIorNOT supports both)
-            print(f"🎬 Processing video file...")
-            result = detect_image_video_from_data(file_data, filename, is_video=True)
-        elif content_type == 'text':
-            # For text files, decode as string
-            text_content = file_data.decode('utf-8')
-            result = detect_text(text_content)
-        else:
-            result = {"error": "Unsupported content type"}
-        
-        print(f"✅ Completed file job {job_id}: Score {result.get('trust_score', {}).get('score', 'N/A')}")
-        return result
-        
-    except Exception as e:
-        print(f"❌ Error in file job {job_id}: {str(e)}")
-        import traceback
-        print(f"Traceback: {traceback.format_exc()}")
-        return {
-            "job_id": job_id,
-            "status": "failed",
-            "error": str(e)
-        }
-
-
-# ============================================================
-# SIGHTENGINE DETECTION FUNCTIONS
-# ============================================================
-
-def detect_with_sightengine_url(image_url):
-    """
-    SightEngine AI detection via URL
-    Returns: AI confidence 0-1 (0=human, 1=AI)
-    """
-    if not SIGHTENGINE_API_USER or not SIGHTENGINE_API_SECRET:
-        print("⚠️ SightEngine credentials not configured")
-        return None
-    
-    try:
-        print(f"👁️ Calling SightEngine (URL)...")
-        
-        with httpx.Client(timeout=30.0) as client:
-            response = client.get(
-                "https://api.sightengine.com/1.0/check.json",
-                params={
-                    'models': 'genai',
-                    'api_user': SIGHTENGINE_API_USER,
-                    'api_secret': SIGHTENGINE_API_SECRET,
-                    'url': image_url
-                }
-            )
-            
-            if response.status_code == 200:
-                data = response.json()
-                print(f"👁️ SightEngine response: {data}")
-                
-                # Extract AI probability
-                ai_prob = data.get('type', {}).get('ai_generated', 0.5)
-                
-                print(f"✅ SightEngine: {int((1-ai_prob)*100)}% human ({int(ai_prob*100)}% AI)")
-                
-                return {
-                    "provider": "SightEngine",
-                    "ai_confidence": ai_prob,
-                    "verdict": "AI-generated" if ai_prob > 0.5 else "Real",
-                    "raw_response": data
-                }
-            else:
-                print(f"⚠️ SightEngine error: {response.status_code}")
-                print(f"⚠️ Response: {response.text}")
-                return None
-                
-    except Exception as e:
-        print(f"⚠️ SightEngine exception: {str(e)}")
-        traceback.print_exc()
-        return None
-
-
-def detect_with_sightengine_file(image_data, filename):
-    """
-    SightEngine AI detection via file upload
-    Returns: AI confidence 0-1 (0=human, 1=AI)
-    """
-    if not SIGHTENGINE_API_USER or not SIGHTENGINE_API_SECRET:
-        print("⚠️ SightEngine credentials not configured")
-        return None
-    
-    try:
-        print(f"👁️ Calling SightEngine (file upload)...")
-        
-        # Create a temporary file-like object for the upload
-        import io
-        file_obj = io.BytesIO(image_data)
-        
-        with httpx.Client(timeout=30.0) as client:
-            response = client.post(
-                "https://api.sightengine.com/1.0/check.json",
-                data={
-                    'models': 'genai',
-                    'api_user': SIGHTENGINE_API_USER,
-                    'api_secret': SIGHTENGINE_API_SECRET
-                },
-                files={
-                    'media': (filename, file_obj, 'image/jpeg')
-                }
-            )
-            
-            if response.status_code == 200:
-                data = response.json()
-                print(f"👁️ SightEngine file response: {data}")
-                
-                ai_prob = data.get('type', {}).get('ai_generated', 0.5)
-                
-                print(f"✅ SightEngine: {int((1-ai_prob)*100)}% human")
-                
-                return {
-                    "provider": "SightEngine",
-                    "ai_confidence": ai_prob,
-                    "verdict": "AI-generated" if ai_prob > 0.5 else "Real",
-                    "raw_response": data
-                }
-            else:
-                print(f"⚠️ SightEngine error: {response.status_code}")
-                return None
-                
-    except Exception as e:
-        print(f"⚠️ SightEngine file exception: {str(e)}")
-        traceback.print_exc()
-        return None
-
-
-# ============================================================
-# BACKUP DETECTION FUNCTIONS
-# ============================================================
-
-def reverse_image_search(url):
-    """Use Google to find where this image appears online"""
-    
-    if not GOOGLE_API_KEY or not GOOGLE_SEARCH_ENGINE_ID:
-        print("⚠️ Google Search not configured, skipping")
-        return None
-    
-    try:
-        print(f"🔍 Running Google Search for image context...")
-        
-        from urllib.parse import urlparse
-        parsed = urlparse(url)
-        filename = parsed.path.split('/')[-1]
-        domain = parsed.netloc
-        
-        search_query = f'"{url}" OR "{filename}"'
-        
-        with httpx.Client(timeout=30.0) as client:
-            response = client.get(
-                "https://www.googleapis.com/customsearch/v1",
-                params={
-                    "key": GOOGLE_API_KEY,
-                    "cx": GOOGLE_SEARCH_ENGINE_ID,
-                    "q": search_query,
-                    "num": 10
-                }
-            )
-            
-            print(f"🔍 Google response status: {response.status_code}")
-            
-            if response.status_code != 200:
-                print(f"⚠️ Google Search error: {response.text}")
-                return None
-            
-            data = response.json()
-            items = data.get("items", [])
-            
-            if not items:
-                print(f"📭 No results found")
-                return {
-                    "found": False,
-                    "num_results": 0
-                }
-            
-            print(f"✅ Found {len(items)} results mentioning this image")
-            
-            domains = []
-            suspicious_keywords = ["ai", "midjourney", "dalle", "stable-diffusion", "generated", "synthetic", "fake", "artificial"]
-            suspicious_count = 0
-            
-            for item in items:
-                link = item.get("link", "")
-                title = item.get("title", "").lower()
-                snippet = item.get("snippet", "").lower()
-                
-                item_domain = urlparse(link).netloc
-                domains.append(item_domain)
-                
-                text = title + " " + snippet
-                if any(keyword in text for keyword in suspicious_keywords):
-                    suspicious_count += 1
-            
-            suspicion_ratio = suspicious_count / len(items) if items else 0
-            
-            print(f"📊 Suspicious results: {suspicious_count}/{len(items)} ({int(suspicion_ratio*100)}%)")
-            
-            return {
-                "found": True,
-                "num_results": len(items),
-                "domains": list(set(domains))[:5],
-                "suspicious_ratio": suspicion_ratio,
-                "suspicious_count": suspicious_count
-            }
-            
-    except Exception as e:
-        print(f"⚠️ Google Search error: {str(e)}")
-        return None
-
-
-def detect_with_huggingface(image_data):
-    """Detect AI using Hugging Face SDXL detector - BACKUP METHOD"""
-    
-    if not HUGGINGFACE_API_KEY:
-        print("⚠️ No Hugging Face API key, skipping")
-        return None
-    
-    try:
-        import base64
-        
-        print(f"🤗 Calling Hugging Face SDXL detector (backup)...")
-        
-        image_b64 = base64.b64encode(image_data).decode('utf-8')
-        
-        with httpx.Client(timeout=30.0) as client:
-            response = client.post(
-                "https://api-inference.huggingface.co/models/Organika/sdxl-detector",
-                headers={
-                    "Authorization": f"Bearer {HUGGINGFACE_API_KEY}",
-                    "Content-Type": "application/json"
-                },
-                json={
-                    "inputs": image_b64
-                }
-            )
-            
-            print(f"🤗 HF Response status: {response.status_code}")
-            
-            if response.status_code == 503:
-                print("⏳ Model loading, waiting 10 seconds...")
-                import time
-                time.sleep(10)
-                response = client.post(
-                    "https://api-inference.huggingface.co/models/Organika/sdxl-detector",
-                    headers={"Authorization": f"Bearer {HUGGINGFACE_API_KEY}"},
-                    json={"inputs": image_b64}
-                )
-            
-            if response.status_code != 200:
-                print(f"⚠️ HF API error: {response.status_code}")
-                return None
-            
-            data = response.json()
-            print(f"🤗 HF Response: {data}")
-            
-            ai_confidence = 0.5
-            if isinstance(data, list) and len(data) > 0:
-                results = data[0] if isinstance(data[0], list) else data
-                for result in results:
-                    label = result.get("label", "")
-                    score = result.get("score", 0.5)
-                    if label in ["artificial", "AI", "LABEL_1"]:
-                        ai_confidence = score
-                        break
-            
-            print(f"✅ HF AI confidence: {ai_confidence:.2%}")
-            
-            return {
-                "provider": "Hugging Face (Backup)",
-                "ai_confidence": ai_confidence,
-                "verdict": "AI-generated" if ai_confidence > 0.5 else "Real",
-                "raw_response": data
-            }
-            
-    except Exception as e:
-        print(f"⚠️ Hugging Face error: {str(e)}")
-        return None
-
-
-def detect_with_aiornot(url_or_data, is_file=False, is_video=False):
-    """Detect AI using AIorNOT API - BACKUP METHOD"""
-    
-    if not AIORNOT_API_KEY:
-        print("⚠️ No AIorNOT API key, skipping")
-        return None
-    
-    try:
-        content_type = "video" if is_video else "image"
-        print(f"🔍 Calling AIorNOT API ({content_type})...")
-        
-        with httpx.Client(timeout=60.0) as client:
-            if is_file:
-                import io
-                file_obj = io.BytesIO(url_or_data) if isinstance(url_or_data, bytes) else url_or_data
-                
-                response = client.post(
-                    "https://api.aiornot.com/v1/reports/file",
-                    headers={"Authorization": f"Bearer {AIORNOT_API_KEY}"},
-                    files={"object": ("file", file_obj, f"{content_type}/jpeg")}
-                )
-            else:
-                response = client.post(
-                    "https://api.aiornot.com/v1/reports/url",
-                    headers={
-                        "Authorization": f"Bearer {AIORNOT_API_KEY}",
-                        "Content-Type": "application/json"
-                    },
-                    json={"url": url_or_data}
-                )
-            
-            print(f"🔍 AIorNOT Response status: {response.status_code}")
-            
-            if response.status_code != 200:
-                print(f"⚠️ AIorNOT error: {response.text}")
-                return None
-            
-            data = response.json()
-            print(f"🔍 AIorNOT Response: {data}")
-            
-            verdict = data.get("verdict", "unknown")
-            ai_confidence = 0.5
-            
-            if verdict == "ai":
-                ai_confidence = 0.9
-            elif verdict == "human":
-                ai_confidence = 0.1
-            elif verdict == "unknown":
-                ai_confidence = 0.5
-            
-            print(f"✅ AIorNOT verdict: {verdict} (AI confidence: {ai_confidence:.2%})")
-            
-            return {
-                "provider": "AIorNOT (Backup)",
-                "ai_confidence": ai_confidence,
-                "verdict": verdict,
-                "raw_response": data
-            }
-            
-    except Exception as e:
-        print(f"⚠️ AIorNOT error: {str(e)}")
-        traceback.print_exc()
-        return None
-
-
-# ============================================================
-# IMAGE/VIDEO DETECTION WITH SIGHTENGINE PRIMARY
-# ============================================================
-
-def detect_image_video(url):
-    """
-    Detect AI in images/videos from URL
-    SightEngine as primary, AIorNOT as backup
-    """
-    
-    print(f"🔍 Starting image/video AI detection for URL: {url}")
-    
-    try:
-        print(f"📥 Downloading image...")
-        with httpx.Client(timeout=30.0) as client:
-            response = client.get(url)
-            if response.status_code != 200:
-                print(f"❌ Failed to download: {response.status_code}")
-                return create_mock_result(50, "Failed to download content")
-            image_data = response.content
-            print(f"✅ Downloaded {len(image_data)} bytes")
-    except Exception as e:
-        print(f"❌ Download error: {str(e)}")
-        return create_mock_result(50, f"Download error: {str(e)}")
-    
-    # Try SightEngine first (PRIMARY)
-    sightengine_result = detect_with_sightengine_url(url)
-    
-    # Try AIorNOT as backup
-    aiornot_result = detect_with_aiornot(url, is_file=False)
-    
-    # If both primary methods fail, try Hugging Face
-    hf_result = None
-    if sightengine_result is None and aiornot_result is None:
-        print(f"⚠️ Both primary detectors failed, trying Hugging Face backup...")
-        hf_result = detect_with_huggingface(image_data)
-    
-    # Collect all successful results
-    results = []
-    if sightengine_result:
-        results.append(sightengine_result)
-    if aiornot_result:
-        results.append(aiornot_result)
-    if hf_result:
-        results.append(hf_result)
-    
-    # If all failed
-    if not results:
-        print(f"❌ All detectors failed")
-        return create_mock_result(50, "All AI detectors unavailable")
-    
-    # Calculate ensemble score
-    total_confidence = sum(r["ai_confidence"] for r in results)
-    avg_confidence = total_confidence / len(results)
-    
-    # Amplify for more decisive results
-    amplified_confidence = amplify_confidence(avg_confidence)
-    
-    # Convert to trust score (inverse of AI confidence)
-    trust_score = int((1 - amplified_confidence) * 100)
-    label_info = get_label_with_explanation(trust_score)
-    
-    print(f"📊 Ensemble results from {len(results)} detector(s)")
-    print(f"📊 Average AI confidence: {int(avg_confidence * 100)}%")
-    print(f"📊 Amplified confidence: {int(amplified_confidence * 100)}%")
-    print(f"📊 Final trust score: {trust_score} ({label_info['label']})")
-    
-    # Build evidence
-    evidence = [
-        {
-            "category": "Combined Analysis",
-            "signal": f"Ensemble score from {len(results)} detector(s): {int(amplified_confidence * 100)}% AI confidence",
-            "confidence": float(amplified_confidence),
-            "details": {
-                "num_detectors": len(results),
-                "combined_confidence": float(amplified_confidence)
-            }
-        }
-    ]
-    
-    for result in results:
-        evidence.append({
-            "category": f"AI Detection - {result['provider']}",
-            "signal": f"{result['provider']}: {result['verdict']} ({int(result['ai_confidence'] * 100)}% AI confidence)",
-            "confidence": float(result['ai_confidence']),
-            "details": result
-        })
-    
-    return {
-        "trust_score": {
-            "score": trust_score,
-            "label": label_info["label"],
-            "explanation": label_info["explanation"],
-            "confidence": label_info["confidence"],
-            "recommended_action": label_info["action"],
-            "confidence_band": [max(0, trust_score - 10), min(100, trust_score + 10)]
-        },
-        "evidence": evidence,
-        "metadata": {
-            "provider": "Ensemble Detection",
-            "content_type": "image",
-            "num_detectors": len(results),
-            "detectors": [r["provider"] for r in results]
-        }
-    }
-
-
-def detect_image_video_from_data(image_data, filename, is_video=False):
-    """
-    Detect AI in images/videos from uploaded file data
-    SightEngine as primary, AIorNOT as backup
-    """
-    
-    content_type = "video" if is_video else "image"
-    print(f"🔍 Starting {content_type} AI detection for uploaded file: {filename}")
-    print(f"📦 File size: {len(image_data)} bytes")
-    
-    # Try SightEngine first (PRIMARY)
-    sightengine_result = detect_with_sightengine_file(image_data, filename)
-    
-    # Try AIorNOT as backup
-    aiornot_result = detect_with_aiornot(image_data, is_file=True, is_video=is_video)
-    
-    # If both primary methods fail, try Hugging Face (images only)
-    hf_result = None
-    if sightengine_result is None and aiornot_result is None and not is_video:
-        print(f"⚠️ Both primary detectors failed, trying Hugging Face backup...")
-        hf_result = detect_with_huggingface(image_data)
-    
-    # Collect all successful results
-    results = []
-    if sightengine_result:
-        results.append(sightengine_result)
-    if aiornot_result:
-        results.append(aiornot_result)
-    if hf_result:
-        results.append(hf_result)
-    
-    # If all failed
-    if not results:
-        print(f"❌ All detectors failed")
-        return create_mock_result(50, "All AI detectors unavailable")
-    
-    # Calculate ensemble score
-    total_confidence = sum(r["ai_confidence"] for r in results)
-    avg_confidence = total_confidence / len(results)
-    
-    # Amplify for more decisive results
-    amplified_confidence = amplify_confidence(avg_confidence)
-    
-    # Convert to trust score (inverse of AI confidence)
-    trust_score = int((1 - amplified_confidence) * 100)
-    label_info = get_label_with_explanation(trust_score)
-    
-    print(f"📊 Ensemble results from {len(results)} detector(s)")
-    print(f"📊 Average AI confidence: {int(avg_confidence * 100)}%")
-    print(f"📊 Amplified confidence: {int(amplified_confidence * 100)}%")
-    print(f"📊 Final trust score: {trust_score} ({label_info['label']})")
-    
-    # Build evidence
-    evidence = [
-        {
-            "category": "Combined Analysis",
-            "signal": f"Ensemble score from {len(results)} detector(s): {int(amplified_confidence * 100)}% AI confidence",
-            "confidence": float(amplified_confidence),
-            "details": {
-                "num_detectors": len(results),
-                "combined_confidence": float(amplified_confidence)
-            }
-        }
-    ]
-    
-    for result in results:
-        evidence.append({
-            "category": f"AI Detection - {result['provider']}",
-            "signal": f"{result['provider']}: {result['verdict']} ({int(result['ai_confidence'] * 100)}% AI confidence)",
-            "confidence": float(result['ai_confidence']),
-            "details": result
-        })
-    
-    import uuid
-    return {
-        "trust_score": {
-            "score": trust_score,
-            "label": label_info["label"],
-            "explanation": label_info["explanation"],
-            "confidence": label_info["confidence"],
-            "recommended_action": label_info["action"],
-            "confidence_band": [max(0, trust_score - 10), min(100, trust_score + 10)]
-        },
-        "evidence": evidence,
-        "metadata": {
-            "filename": filename,
-            "provider": "Ensemble Detection",
-            "content_type": content_type,
-            "report_id": str(uuid.uuid4())
-        }
-    }
-
-
-# ============================================================
-# TEXT DETECTION
-# ============================================================
-
-def detect_text_winston(text_content):
-    """Detect AI-generated text using Winston AI (Primary method)"""
-    
-    if not WINSTON_API_KEY:
-        print("⚠️ No Winston AI key configured")
-        return None
-    
-    try:
-        print(f"🔍 Calling Winston AI...")
-        print(f"📝 Text length: {len(text_content)} characters")
-        
-        # CREDIT CONSERVATION: Skip Winston for very long articles
-        # Winston charges ~1 credit per character, so long articles are expensive
-        MAX_CHARS_FOR_WINSTON = 2000  # Only use Winston for articles under 2000 chars
-        if len(text_content) > MAX_CHARS_FOR_WINSTON:
-            print(f"⚠️ Article too long ({len(text_content)} chars) - would cost {len(text_content)} credits")
-            print(f"💡 Using free backup detector to conserve Winston credits")
-            return None  # Fall back to free detector
-        
-        MAX_CHARS = 10000
-        text_to_check = text_content[:MAX_CHARS] if len(text_content) > MAX_CHARS else text_content
-        
-        with httpx.Client(timeout=30.0) as client:
-            response = client.post(
-                "https://api.gowinston.ai/v2/plagiarism",
-                headers={
-                    "Authorization": f"Bearer {WINSTON_API_KEY}",
-                    "Content-Type": "application/json"
-                },
-                json={
-                    "text": text_to_check,
-                    "language": "en"
-                }
-            )
-            
-            print(f"🔍 Winston response status: {response.status_code}")
-            
-            if response.status_code != 200:
-                print(f"⚠️ Winston error: {response.text}")
-                return None
-            
-            data = response.json()
-            print(f"🔍 Winston response: {data}")
-            
-            if "score" in data:
-                human_score = data["score"]
-                ai_confidence = (100 - human_score) / 100
-                
-                print(f"✅ Winston: {human_score}% human = {int(ai_confidence * 100)}% AI confidence")
-                
-                return {
-                    "provider": "Winston AI",
-                    "ai_confidence": ai_confidence,
-                    "verdict": "AI-generated" if ai_confidence > 0.5 else "Human-written",
-                    "raw_response": data,
-                    "details": {
-                        "winston_human_score": human_score
-                    }
-                }
-            else:
-                print(f"⚠️ Could not extract score from Winston response")
-                return None
-            
-    except Exception as e:
-        print(f"⚠️ Winston AI error: {str(e)}")
-        traceback.print_exc()
-        return None
-
-
-def detect_text_huggingface(text_content):
-    """Detect AI-generated text using OpenAI's RoBERTa Large detector - BACKUP"""
-    
-    if not HUGGINGFACE_API_KEY:
-        print("⚠️ No Hugging Face API key")
-        return None
-    
-    try:
-        print(f"🤗 Calling OpenAI RoBERTa Large (backup)...")
-        print(f"⚠️ Note: This free detector has higher false positive rate than Winston AI")
-        
-        MAX_CHARS = 2000
-        text_to_check = text_content[:MAX_CHARS] if len(text_content) > MAX_CHARS else text_content
-        
-        with httpx.Client(timeout=30.0) as client:
-            response = client.post(
-                "https://api-inference.huggingface.co/models/openai-community/roberta-large-openai-detector",
-                headers={
-                    "Authorization": f"Bearer {HUGGINGFACE_API_KEY}",
-                    "Content-Type": "application/json"
-                },
-                json={"inputs": text_to_check}
-            )
-            
-            if response.status_code == 503:
-                print("⏳ Model loading, waiting 10 seconds...")
-                import time
-                time.sleep(10)
-                response = client.post(
-                    "https://api-inference.huggingface.co/models/openai-community/roberta-large-openai-detector",
-                    headers={"Authorization": f"Bearer {HUGGINGFACE_API_KEY}"},
-                    json={"inputs": text_to_check}
-                )
-            
-            if response.status_code != 200:
-                print(f"⚠️ Backup API error: {response.status_code}")
-                return None
-            
-            data = response.json()
-            
-            ai_confidence = 0.5
-            if isinstance(data, list) and len(data) > 0:
-                results = data[0] if isinstance(data[0], list) else data
-                for result in results:
-                    label = result.get("label", "")
-                    score = result.get("score", 0.5)
-                    if label == "LABEL_1":
-                        ai_confidence = score
-                        break
-            
-            # IMPORTANT: RoBERTa has high false positive rate on professional writing
-            # Apply calibration to reduce false positives
-            if ai_confidence > 0.85:
-                print(f"⚠️ High AI confidence ({int(ai_confidence * 100)}%) - applying calibration")
-                print(f"💡 Professional/formal writing often triggers false positives")
-                # Reduce confidence for very high scores (likely false positive)
-                ai_confidence = 0.5 + (ai_confidence - 0.85) * 0.3  # Dampen extreme scores
-                print(f"📊 Calibrated AI confidence: {int(ai_confidence * 100)}%")
-            
-            print(f"✅ Backup AI confidence: {ai_confidence:.2%}")
-            
-            return {
-                "provider": "OpenAI RoBERTa (Backup - Free)",
-                "ai_confidence": ai_confidence,
-                "verdict": "AI-generated" if ai_confidence > 0.5 else "Human-written",
-                "raw_response": data,
-                "note": "Free backup detector - higher false positive rate on formal text"
-            }
-            
-    except Exception as e:
-        print(f"⚠️ Backup detector error: {str(e)}")
-        return None
-
-
-def detect_text(text_content):
-    """Detect AI in text using Winston AI (primary) with Hugging Face backup"""
-    
-    print(f"🔍 Starting text AI detection (length: {len(text_content)} chars)")
-    
-    result = detect_text_winston(text_content)
-    
-    if result is None:
-        print(f"⚠️ Winston AI unavailable, using backup detector")
-        result = detect_text_huggingface(text_content)
-    
-    if result is None:
-        print(f"❌ Text detection failed: All detectors unavailable")
-        return create_mock_result(50, "Text detection API unavailable")
-    
-    ai_confidence = result.get("ai_confidence", 0.5)
-    trust_score = int((1 - ai_confidence) * 100)
-    label_info = get_label_with_explanation(trust_score)
-    
-    print(f"📊 AI confidence: {int(ai_confidence * 100)}%")
-    print(f"📊 Final trust score: {trust_score} ({label_info['label']})")
-    
-    return {
-        "trust_score": {
-            "score": trust_score,
-            "label": label_info["label"],
-            "explanation": label_info["explanation"],
-            "confidence": label_info["confidence"],
-            "recommended_action": label_info["action"],
-            "confidence_band": [max(0, trust_score - 10), min(100, trust_score + 10)]
-        },
-        "evidence": [
-            {
-                "category": "AI Text Detection",
-                "signal": f"{result['provider']}: {result['verdict']} ({int(ai_confidence * 100)}% AI confidence)",
-                "confidence": float(ai_confidence),
-                "details": result
-            }
+CONTENT_RED_FLAGS = {
+    "gossip_language": {
+        "patterns": [
+            r"\bsources?\s+(?:say|claim|reveal|told)\b",
+            r"\binsiders?\s+(?:claim|say|reveal)\b",
+            r"\ballegedly\b",
+            r"\breportedly\b",
+            r"\brumored\b",
+            r"\bwhispers\b",
         ],
-        "metadata": {
-            "provider": result["provider"],
-            "content_type": "text",
-            "text_length": len(text_content),
-            "detector": result["provider"]
-        }
+        "penalty": 5,
+        "label": "gossip/unverified sources"
+    },
+    "sensational_language": {
+        "patterns": [
+            r"\bshocking\b",
+            r"\bexplosive\b",
+            r"\bbombshell\b",
+            r"\bstunning\b",
+            r"\bslams?\b",
+            r"\bblasts?\b",
+            r"\b(?:forces?|threatens?)\b",
+            r"\bdevastating\b",
+        ],
+        "penalty": 3,
+        "label": "sensational language"
+    },
+    "speculation": {
+        "patterns": [
+            r"\b(?:could|might|may)\s+have\b",
+            r"\bappears?\s+to\b",
+            r"\bseems?\s+to\b",
+            r"\bpossibly\b",
+            r"\bpotentially\b",
+        ],
+        "penalty": 2,
+        "label": "speculative claims"
+    },
+    "clickbait": {
+        "patterns": [
+            r"\byou\s+won'?t\s+believe\b",
+            r"\bwhat\s+happens?\s+next\b",
+            r"\bshock(?:ing)?\b.*\b(?:revelation|truth)\b",
+            r"\bthe\s+truth\s+about\b",
+        ],
+        "penalty": 8,
+        "label": "clickbait phrasing"
     }
+}
 
-
-# ============================================================
-# NEWS VERIFICATION FUNCTIONS (YOUR PROPRIETARY IP!)
-# ============================================================
-
-def extract_article(url):
-    """Extract article content from URL - YOUR CODE"""
-    print(f"📰 Extracting article from: {url}")
+def analyze_content_quality(text: str, title: str = "") -> Dict:
+    """
+    Analyze article content for red flags
+    Returns quality score and detailed reasoning
+    """
+    combined_text = f"{title} {text}".lower()
     
-    try:
-        with httpx.Client(timeout=30.0, follow_redirects=True) as client:
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-                'Accept-Language': 'en-US,en;q=0.5',
-                'Accept-Encoding': 'gzip, deflate, br',
-                'DNT': '1',
-                'Connection': 'keep-alive',
-                'Upgrade-Insecure-Requests': '1'
-            }
-            response = client.get(url, headers=headers)
-            
-            if response.status_code != 200:
-                return {"error": f"Failed to fetch article: {response.status_code}"}
-            
-            soup = BeautifulSoup(response.content, 'html.parser')
-            
-            domain = urlparse(url).netloc.replace('www.', '')
-            
-            # Extract title
-            title = None
-            if soup.find('h1'):
-                title = soup.find('h1').get_text(strip=True)
-            elif soup.find('meta', property='og:title'):
-                title = soup.find('meta', property='og:title')['content']
-            elif soup.find('title'):
-                title = soup.find('title').get_text(strip=True)
-            
-            # Extract author
-            author = None
-            author_meta = soup.find('meta', attrs={'name': 'author'})
-            if author_meta:
-                author = author_meta.get('content')
-            
-            # Extract date
-            date = None
-            date_meta = soup.find('meta', property='article:published_time')
-            if date_meta:
-                date = date_meta.get('content')
-            
-            # Extract text
-            for script in soup(['script', 'style', 'nav', 'header', 'footer', 'aside']):
-                script.decompose()
-            
-            article_text = ""
-            article_tag = soup.find('article')
-            if article_tag:
-                paragraphs = article_tag.find_all('p')
-                article_text = ' '.join([p.get_text(strip=True) for p in paragraphs])
-            else:
-                paragraphs = soup.find_all('p')
-                article_text = ' '.join([p.get_text(strip=True) for p in paragraphs[:20]])
-            
-            # Extract images
-            images = []
-            for img in soup.find_all('img'):
-                src = img.get('src')
-                if src and not src.startswith('data:'):
-                    if src.startswith('//'):
-                        src = 'https:' + src
-                    elif src.startswith('/'):
-                        src = f"https://{domain}{src}"
-                    images.append(src)
-            
-            print(f"✅ Extracted: {len(article_text)} chars, {len(images)} images")
-            
-            return {
-                "url": url,
-                "domain": domain,
-                "title": title,
-                "author": author,
-                "date": date,
-                "text": article_text,
-                "images": images[:5],
-                "word_count": len(article_text.split())
-            }
-            
-    except Exception as e:
-        print(f"❌ Extraction error: {str(e)}")
-        return {"error": str(e)}
-
-
-def check_source_credibility(domain):
-    """Check source credibility using YOUR database - YOUR IP!"""
-    print(f"🔍 Checking source credibility: {domain}")
+    red_flags_found = []
+    total_penalty = 0
+    flag_details = []
     
-    if domain in SOURCE_CREDIBILITY:
-        source = SOURCE_CREDIBILITY[domain]
-        print(f"✅ Found in database: {source['score']}/100 ({source['tier']})")
-        return {
-            "known_source": True,
-            "credibility_score": source["score"],
-            "bias": source["bias"],
-            "tier": source["tier"],
-            "type": source["type"],
-            "verdict": get_source_verdict(source["score"])
-        }
+    for category, config in CONTENT_RED_FLAGS.items():
+        matches = []
+        for pattern in config["patterns"]:
+            found = re.findall(pattern, combined_text, re.IGNORECASE)
+            matches.extend(found)
+        
+        if matches:
+            count = len(matches)
+            penalty = config["penalty"] * min(count, 3)  # Cap at 3 occurrences
+            total_penalty += penalty
+            
+            red_flags_found.append(config["label"])
+            flag_details.append({
+                "category": category,
+                "label": config["label"],
+                "count": count,
+                "penalty": penalty,
+                "examples": matches[:2]  # Show first 2 examples
+            })
     
-    print(f"⚠️ Unknown source, using heuristics...")
+    # Calculate quality score (100 - penalties)
+    quality_score = max(30, 100 - total_penalty)  # Minimum 30
     
-    heuristic_score = calculate_domain_heuristics(domain)
+    # Generate reasoning
+    if red_flags_found:
+        reasoning = f"Content contains: {', '.join(red_flags_found)}. "
+        if total_penalty > 15:
+            reasoning += "Multiple quality issues detected."
+        elif total_penalty > 8:
+            reasoning += "Some reliability concerns."
+    else:
+        reasoning = "Content appears factual with standard journalistic language."
     
     return {
-        "known_source": False,
-        "credibility_score": heuristic_score,
-        "bias": "unknown",
-        "tier": "unknown",
-        "type": "unknown",
-        "verdict": "Unknown source - verify independently",
-        "warning": "This source is not in our verified database"
+        "quality_score": quality_score,
+        "red_flags": red_flags_found,
+        "penalty": total_penalty,
+        "reasoning": reasoning,
+        "details": flag_details
     }
 
+# ============================================================================
+# IMAGE SELECTION & FILTERING
+# ============================================================================
 
-def calculate_domain_heuristics(domain):
-    """YOUR algorithm for unknown sources"""
-    score = 50
-    
-    red_flags = [
-        'truth', 'real', 'patriot', 'freedom', 'news24', 'breaking',
-        'exclusive', 'insider', 'leaked', 'exposed'
+def filter_article_images(images: List[str], max_images: int = 3) -> List[str]:
+    """
+    Filter out logos, icons, headers - keep actual article images
+    """
+    # Patterns to skip
+    skip_patterns = [
+        'logo', 'icon', 'header', 'footer', 'banner',
+        'facebook', 'twitter', 'linkedin', 'instagram',
+        'social', 'share', 'sitelog', 'avatar',
+        'ads', 'advertisement', 'promo'
     ]
-    for flag in red_flags:
-        if flag in domain.lower():
-            score -= 10
     
-    if domain.endswith('.gov'):
-        score += 20
-    elif domain.endswith('.edu'):
-        score += 15
-    elif domain.endswith('.org'):
-        score += 5
+    # Filter images
+    article_images = []
+    for img in images:
+        img_lower = img.lower()
+        
+        # Skip if matches any pattern
+        if any(pattern in img_lower for pattern in skip_patterns):
+            continue
+        
+        # Skip if tiny (likely icon)
+        if any(size in img_lower for size in ['16x16', '32x32', '48x48', '64x64']):
+            continue
+        
+        # Skip SVG files (usually logos)
+        if img_lower.endswith('.svg'):
+            continue
+        
+        article_images.append(img)
     
-    if domain.count('.') > 2:
-        score -= 5
-    
-    return max(0, min(100, score))
+    # Return first N images
+    return article_images[:max_images]
 
+# ============================================================================
+# IMAGE AI DETECTION (SightEngine)
+# ============================================================================
 
-def get_source_verdict(score):
-    """Convert source score to verdict"""
-    if score >= 90:
-        return "Highly credible source"
-    elif score >= 70:
-        return "Generally reliable source"
-    elif score >= 50:
-        return "Mixed reliability - verify claims"
-    else:
-        return "Low credibility source - high skepticism advised"
+async def check_image_ai_sightengine(image_url: str) -> Dict:
+    """Check if image is AI-generated using SightEngine"""
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(
+                "https://api.sightengine.com/1.0/check.json",
+                params={
+                    "models": "genai",
+                    "api_user": SIGHTENGINE_USER,
+                    "api_secret": SIGHTENGINE_SECRET,
+                    "url": image_url
+                }
+            )
+            
+            print(f"👁️ SightEngine response: {response.json()}")
+            
+            if response.status_code == 200:
+                data = response.json()
+                if data.get("status") == "success":
+                    ai_score = data.get("type", {}).get("ai_generated", 0)
+                    human_score = int((1 - ai_score) * 100)
+                    
+                    print(f"✅ SightEngine: {human_score}% human ({int(ai_score * 100)}% AI)")
+                    
+                    return {
+                        "provider": "SightEngine",
+                        "ai_probability": ai_score,
+                        "human_probability": 1 - ai_score,
+                        "verdict": "AI-generated" if ai_score > 0.5 else "Likely human",
+                        "confidence": abs(ai_score - 0.5) * 2
+                    }
+            
+            print(f"⚠️ SightEngine error: {response.status_code}")
+            print(f"⚠️ Response: {response.text}")
+            return None
+            
+    except Exception as e:
+        print(f"❌ SightEngine exception: {e}")
+        return None
 
+# ============================================================================
+# CROSS-REFERENCE CHECKING
+# ============================================================================
 
-def cross_reference_story(title, text):
-    """Cross-reference story using News API - YOUR ALGORITHM"""
-    
+async def cross_reference_story(title: str, domain: str) -> Dict:
+    """Cross-reference story with News API"""
     if not NEWS_API_KEY:
-        print("⚠️ No News API key - skipping cross-reference")
-        return {"checked": False, "reason": "News API key not configured"}
+        return {
+            "checked": False,
+            "corroboration_score": 50,
+            "verdict": "Cross-reference unavailable",
+            "num_sources": 0
+        }
     
     try:
+        # Use first 100 chars of title
+        query = title[:100]
+        
         print(f"🔍 Cross-referencing story...")
         
-        # Extract key terms from title for search
-        search_query = title[:100] if title else text[:100]
-        
-        with httpx.Client(timeout=30.0) as client:
-            response = client.get(
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            response = await client.get(
                 "https://newsapi.org/v2/everything",
                 params={
-                    "q": search_query,
+                    "q": query,
                     "apiKey": NEWS_API_KEY,
                     "pageSize": 20,
                     "sortBy": "relevancy"
                 }
             )
             
-            if response.status_code != 200:
-                print(f"⚠️ News API error: {response.status_code}")
-                return {"checked": False, "reason": f"API error: {response.status_code}"}
-            
-            data = response.json()
-            articles = data.get("articles", [])
-            
-            if not articles:
+            if response.status_code == 200:
+                data = response.json()
+                articles = data.get("articles", [])
+                
+                # Count unique sources (excluding original domain)
+                unique_sources = set()
+                for article in articles:
+                    source_name = article.get("source", {}).get("name", "")
+                    article_domain = article.get("url", "")
+                    
+                    # Skip same domain
+                    if domain not in article_domain:
+                        unique_sources.add(source_name)
+                
+                num_sources = len(unique_sources)
+                
+                # Score based on corroboration
+                if num_sources >= 5:
+                    score = 95
+                    verdict = "Widely corroborated"
+                elif num_sources >= 3:
+                    score = 80
+                    verdict = "Multiple sources confirm"
+                elif num_sources >= 1:
+                    score = 60
+                    verdict = "Some corroboration"
+                else:
+                    score = 10
+                    verdict = "No corroborating sources found"
+                
                 return {
                     "checked": True,
-                    "corroboration_score": 10,
-                    "verdict": "No corroborating sources found",
-                    "num_sources": 0
+                    "corroboration_score": score,
+                    "verdict": verdict,
+                    "num_sources": num_sources,
+                    "reasoning": f"Found {num_sources} independent sources reporting similar story"
                 }
-            
-            # Analyze sources
-            unique_sources = set()
-            trusted_sources = []
-            
-            for article in articles:
-                source_name = article.get("source", {}).get("name", "")
-                domain = urlparse(article.get("url", "")).netloc.replace('www.', '')
-                
-                unique_sources.add(domain)
-                
-                if domain in SOURCE_CREDIBILITY:
-                    if SOURCE_CREDIBILITY[domain]["score"] >= 70:
-                        trusted_sources.append(domain)
-            
-            corroboration_score = min(100, (len(unique_sources) * 10) + (len(trusted_sources) * 20))
-            
-            print(f"✅ Found {len(unique_sources)} sources, {len(trusted_sources)} trusted")
-            
-            return {
-                "checked": True,
-                "num_sources": len(unique_sources),
-                "trusted_sources": len(trusted_sources),
-                "corroboration_score": corroboration_score,
-                "verdict": get_corroboration_verdict(corroboration_score),
-                "source_list": list(unique_sources)[:5]
-            }
-            
+        
+        return {
+            "checked": True,
+            "corroboration_score": 10,
+            "verdict": "Cross-reference failed",
+            "num_sources": 0,
+            "reasoning": "Unable to verify with external sources"
+        }
+        
     except Exception as e:
-        print(f"❌ Cross-reference error: {str(e)}")
-        return {"checked": False, "reason": str(e)}
+        print(f"❌ Cross-reference error: {e}")
+        return {
+            "checked": False,
+            "corroboration_score": 50,
+            "verdict": "Cross-reference unavailable",
+            "num_sources": 0,
+            "reasoning": "Cross-reference service unavailable"
+        }
 
+# ============================================================================
+# NEWS VERIFICATION (MAIN FUNCTION)
+# ============================================================================
 
-def get_corroboration_verdict(score):
-    """Convert corroboration score to verdict"""
-    if score >= 70:
-        return "Story widely reported by multiple sources"
-    elif score >= 40:
-        return "Some corroboration from other sources"
-    else:
-        return "Limited corroboration - single source story"
-
-
-def calculate_news_trust_score(source_check, text_detection, image_detections, cross_ref, article):
+async def verify_news_article(url: str) -> Dict:
     """
-    YOUR PROPRIETARY SCORING ALGORITHM - THE SECRET SAUCE!
-    
-    For NEWS verification, we DON'T use text AI detection because:
-    - Professional journalism triggers false positives
-    - Source credibility is more important
-    - Images and cross-reference are better signals
-    
-    Weighting:
-    - Source Credibility: 50% (most important!)
-    - Image Authenticity: 30% 
-    - Cross-Reference: 20%
-    """
-    
-    scores = []
-    weights = []
-    factors = []
-    
-    # Factor 1: Source Credibility (50% - MOST IMPORTANT!)
-    source_score = source_check["credibility_score"]
-    scores.append(source_score)
-    weights.append(0.50)
-    factors.append({
-        "factor": "Source Credibility",
-        "score": source_score,
-        "weight": "50%",
-        "verdict": source_check["verdict"]
-    })
-    
-    # Factor 2: Image Authenticity (30%)
-    if image_detections:
-        avg_image_score = sum((1 - img["ai_confidence"]) * 100 for img in image_detections) / len(image_detections)
-        scores.append(avg_image_score)
-        weights.append(0.30)
-        factors.append({
-            "factor": "Image Authenticity",
-            "score": int(avg_image_score),
-            "weight": "30%",
-            "verdict": f"{len(image_detections)} images analyzed"
-        })
-    
-    # Factor 3: Cross-Reference (20%)
-    if cross_ref.get("checked"):
-        corr_score = cross_ref.get("corroboration_score", 50)
-        scores.append(corr_score)
-        weights.append(0.20)
-        factors.append({
-            "factor": "Cross-Reference",
-            "score": corr_score,
-            "weight": "20%",
-            "verdict": cross_ref["verdict"]
-        })
-    
-    # Calculate weighted average
-    if scores:
-        total_weight = sum(weights)
-        normalized_weights = [w / total_weight for w in weights]
-        final_score = sum(s * w for s, w in zip(scores, normalized_weights))
-        final_score = int(final_score)
-    else:
-        final_score = 50
-    
-    label_info = get_label_with_explanation(final_score)
-    
-    return {
-        "score": final_score,
-        "label": label_info["label"],
-        "explanation": label_info["explanation"],
-        "confidence": label_info["confidence"],
-        "recommended_action": label_info["action"],
-        "scoring_factors": factors,
-        "methodology": "Multi-factor weighted ensemble"
-    }
-
-
-def verify_news(url):
-    """
-    YOUR PROPRIETARY NEWS VERIFICATION ENGINE
-    This is YOUR IP - the secret sauce!
+    Verify news article credibility
+    Multi-factor: Source (50%) + Content Quality (30%) + Cross-ref (20%)
     """
     print(f"\n🗞️ Starting news verification for: {url}")
-    print(f"=" * 60)
+    print("=" * 60)
     
-    # Step 1: Extract article
-    article = extract_article(url)
-    if "error" in article:
-        return {
-            "error": article["error"],
-            "trust_score": {"score": 0, "label": "Error"}
-        }
-    
-    # Step 2: Check source credibility (YOUR DATABASE!)
-    source_check = check_source_credibility(article["domain"])
-    
-    # Step 3: SKIP TEXT AI DETECTION FOR NEWS
-    # News verification relies on source credibility, not text analysis
-    # Professional journalism often triggers false positives in AI detectors
-    # Your value is in: SOURCE DATABASE + IMAGE ANALYSIS + CROSS-REFERENCE
-    text_detection = None
-    print(f"💡 Skipping text AI detection for news articles")
-    print(f"📰 News verification focuses on: source credibility + images + cross-reference")
-    
-    # Step 4: Detect AI in images
-    image_detections = []
-    if article["images"]:
-        for img_url in article["images"][:3]:
-            result = detect_with_sightengine_url(img_url)
+    try:
+        # Extract article
+        print(f"📰 Extracting article from: {url}")
+        article = Article(url)
+        article.download()
+        article.parse()
+        
+        domain = article.source_url.replace("http://", "").replace("https://", "").replace("www.", "").split("/")[0]
+        
+        print(f"✅ Extracted: {len(article.text)} chars, {len(article.images)} images")
+        
+        # 1. Check source credibility (50% weight)
+        print(f"🔍 Checking source credibility: {domain}")
+        source_info = SOURCE_CREDIBILITY.get(domain, {
+            "score": 50,
+            "tier": "unknown",
+            "bias": "unknown",
+            "type": "unknown"
+        })
+        
+        source_score = source_info["score"]
+        is_known = domain in SOURCE_CREDIBILITY
+        
+        if is_known:
+            print(f"✅ Found in database: {source_score}/100 ({source_info['tier']})")
+            source_reasoning = f"{domain} is a {source_info['tier']} source ({source_info['type']}) with {source_info['bias']} bias"
+        else:
+            print(f"⚠️ Unknown source: {domain} (defaulting to 50/100)")
+            source_reasoning = f"Unknown source. No credibility data available for {domain}"
+        
+        # 2. Analyze content quality (30% weight)
+        print(f"📝 Analyzing content quality...")
+        content_analysis = analyze_content_quality(article.text, article.title)
+        content_score = content_analysis["quality_score"]
+        content_reasoning = content_analysis["reasoning"]
+        
+        print(f"📊 Content quality: {content_score}/100")
+        if content_analysis["red_flags"]:
+            print(f"🚩 Red flags: {', '.join(content_analysis['red_flags'])}")
+        
+        # 3. Check images (included in content quality)
+        filtered_images = filter_article_images(list(article.images))
+        print(f"🖼️ Checking {len(filtered_images)} article images (filtered from {len(article.images)})")
+        
+        image_results = []
+        image_scores = []
+        
+        for img_url in filtered_images[:3]:  # Max 3 images
+            print(f"👁️ Calling SightEngine (URL)...")
+            result = await check_image_ai_sightengine(img_url)
             if result:
-                image_detections.append(result)
-    
-    # Step 5: Cross-reference check (YOUR ALGORITHM!)
-    cross_ref = cross_reference_story(article["title"], article["text"])
-    
-    # Step 6: Calculate YOUR PROPRIETARY TRUST SCORE
-    trust_score = calculate_news_trust_score(
-        source_check,
-        text_detection,
-        image_detections,
-        cross_ref,
-        article
-    )
-    
-    print(f"=" * 60)
-    print(f"📊 Final News Trust Score: {trust_score['score']}/100")
-    print(f"\n")
-    
-    return {
-        "trust_score": trust_score,
-        "article": {
-            "title": article["title"],
-            "domain": article["domain"],
-            "author": article["author"],
-            "date": article["date"],
-            "word_count": article["word_count"]
-        },
-        "source_credibility": source_check,
-        "content_analysis": {
-            "text_ai_detection": text_detection.get("trust_score") if text_detection else None,
-            "images_checked": len(image_detections),
-            "image_ai_detection": image_detections
-        },
-        "cross_reference": cross_ref,
-        "metadata": {
-            "provider": "CrediSource News Engine",
-            "content_type": "news_article",
-            "verification_layers": 5
+                image_results.append({
+                    "url": img_url,
+                    "provider": result["provider"],
+                    "verdict": result["verdict"],
+                    "ai_probability": result["ai_probability"],
+                    "human_probability": result["human_probability"]
+                })
+                # Convert to score (human probability = good)
+                img_score = int(result["human_probability"] * 100)
+                image_scores.append(img_score)
+        
+        # Average image score
+        avg_image_score = int(sum(image_scores) / len(image_scores)) if image_scores else 85
+        
+        # Combine content text + images
+        combined_content_score = int(content_score * 0.6 + avg_image_score * 0.4)
+        
+        # 4. Cross-reference (20% weight) - OPTIONAL
+        cross_ref = await cross_reference_story(article.title, domain)
+        cross_ref_score = cross_ref["corroboration_score"]
+        
+        # ==================================================================
+        # SMART WEIGHTING: If cross-ref finds nothing, redistribute weight
+        # ==================================================================
+        if cross_ref["num_sources"] == 0:
+            print("⚠️ Cross-reference found no sources - redistributing weight")
+            # Redistribute 20% weight proportionally
+            source_weight = 62.5  # 50 + (20 * 0.625)
+            content_weight = 37.5  # 30 + (20 * 0.375)
+            cross_ref_weight = 0
+            
+            final_score = int(
+                (source_score * source_weight / 100) +
+                (combined_content_score * content_weight / 100)
+            )
+        else:
+            # Normal weighting
+            source_weight = 50
+            content_weight = 30
+            cross_ref_weight = 20
+            
+            final_score = int(
+                (source_score * 0.50) +
+                (combined_content_score * 0.30) +
+                (cross_ref_score * 0.20)
+            )
+        
+        # Generate final explanation
+        tier_explanations = {
+            "tier1": "a highly credible, well-established news source",
+            "tier2": "a generally credible news source",
+            "tier3": "a mixed-reliability source (tabloid or partisan)",
+            "tier4": "a low-credibility source",
+            "unknown": "an unknown source with no credibility data"
         }
-    }
-
-
-# ============================================================
-# HELPER FUNCTIONS
-# ============================================================
-
-def amplify_confidence(confidence):
-    """Amplify confidence scores to make them more decisive"""
-    centered = confidence - 0.5
-    amplified = centered * (abs(centered) ** 0.3) * 2.5
-    result = 0.5 + amplified
-    return max(0.0, min(1.0, result))
-
-
-def get_label_with_explanation(score):
-    """Convert score to consumer-friendly label with explanation"""
-    if score >= 65:
+        
+        tier_desc = tier_explanations.get(source_info["tier"], "an unknown source")
+        
+        explanation_parts = [
+            f"This article is from {tier_desc}."
+        ]
+        
+        # Add content quality explanation
+        if content_analysis["red_flags"]:
+            explanation_parts.append(f"Content analysis found: {', '.join(content_analysis['red_flags'])}.")
+        else:
+            explanation_parts.append("Content appears factual with standard journalistic language.")
+        
+        # Add cross-ref explanation
+        if cross_ref["num_sources"] > 0:
+            explanation_parts.append(f"Story corroborated by {cross_ref['num_sources']} independent sources.")
+        elif cross_ref["checked"]:
+            explanation_parts.append("No independent corroboration found.")
+        
+        final_explanation = " ".join(explanation_parts)
+        
+        # Determine label
+        if final_score >= 80:
+            label = "Highly Credible"
+            confidence = "High"
+            action = "This article appears trustworthy."
+        elif final_score >= 60:
+            label = "Probably Credible"
+            confidence = "Moderate-High"
+            action = "This article is likely credible, but verify key claims."
+        elif final_score >= 40:
+            label = "Mixed Reliability"
+            confidence = "Moderate"
+            action = "Approach with caution. Verify claims from other sources."
+        else:
+            label = "Low Credibility"
+            confidence = "Low"
+            action = "Be skeptical. Seek confirmation from credible sources."
+        
+        print("=" * 60)
+        print(f"📊 Final News Trust Score: {final_score}/100")
+        
         return {
-            "label": "Likely Real",
-            "explanation": "This content appears to be authentic. Our AI detection found strong indicators that this was created by a human or captured with a real camera.",
-            "confidence": "High",
-            "action": "This content is likely trustworthy."
-        }
-    elif score >= 50:
-        return {
-            "label": "Probably Real", 
-            "explanation": "This content likely appears authentic, but we detected some minor inconsistencies. This could be due to image editing or compression.",
-            "confidence": "Moderate-High",
-            "action": "This content is probably trustworthy, but verify important details."
-        }
-    elif score >= 35:
-        return {
-            "label": "Probably Fake",
-            "explanation": "This content shows signs of AI generation. We detected patterns commonly found in AI-created images or text.",
-            "confidence": "Moderate-High",
-            "action": "Be cautious. This content may be AI-generated or heavily manipulated."
-        }
-    else:
-        return {
-            "label": "Likely Fake",
-            "explanation": "This content appears to be AI-generated. We found strong indicators of synthetic creation, including telltale artifacts and patterns typical of AI generators.",
-            "confidence": "High",
-            "action": "This content is likely fake. Do not trust without additional verification."
-        }
-
-def get_label(score):
-    """Convert score to consumer-friendly label (backward compatibility)"""
-    return get_label_with_explanation(score)["label"]
-
-def create_mock_result(score, reason):
-    """Create mock result when API unavailable"""
-    print(f"🔧 Creating mock result: score={score}, reason={reason}")
-    return {
-        "trust_score": {
-            "score": score,
-            "label": get_label(score),
-            "confidence_band": [max(0, score - 10), min(100, score + 10)]
-        },
-        "evidence": [
-            {
-                "category": "System",
-                "signal": reason,
-                "confidence": 0.5
+            "trust_score": {
+                "score": final_score,
+                "label": label,
+                "explanation": final_explanation,
+                "confidence": confidence,
+                "recommended_action": action,
+                "scoring_factors": [
+                    {
+                        "factor": "Source Credibility",
+                        "score": source_score,
+                        "weight": f"{source_weight}%",
+                        "reasoning": source_reasoning
+                    },
+                    {
+                        "factor": "Content Quality",
+                        "score": combined_content_score,
+                        "weight": f"{content_weight}%",
+                        "reasoning": f"{content_reasoning} Images: {avg_image_score}% authentic."
+                    },
+                    {
+                        "factor": "Cross-Reference",
+                        "score": cross_ref_score,
+                        "weight": f"{cross_ref_weight}%",
+                        "reasoning": cross_ref.get("reasoning", cross_ref["verdict"])
+                    }
+                ],
+                "methodology": "Multi-factor weighted ensemble with content analysis"
+            },
+            "article": {
+                "title": article.title,
+                "domain": domain,
+                "author": ", ".join(article.authors) if article.authors else None,
+                "date": article.publish_date.isoformat() if article.publish_date else None,
+                "word_count": len(article.text.split())
+            },
+            "source_credibility": {
+                "known_source": is_known,
+                "credibility_score": source_score,
+                "bias": source_info.get("bias", "unknown"),
+                "tier": source_info.get("tier", "unknown"),
+                "type": source_info.get("type", "unknown"),
+                "verdict": tier_desc
+            },
+            "content_analysis": {
+                "quality_score": content_score,
+                "red_flags": content_analysis["red_flags"],
+                "penalty": content_analysis["penalty"],
+                "details": content_analysis["details"],
+                "images_checked": len(image_results),
+                "image_ai_detection": image_results
+            },
+            "cross_reference": cross_ref,
+            "metadata": {
+                "provider": "CrediSource News Engine",
+                "content_type": "news",
+                "version": "2.0-with-reasoning"
             }
-        ],
-        "metadata": {
-            "note": "Mock result - check API keys",
-            "reason": reason
         }
-    }
+        
+    except Exception as e:
+        print(f"❌ News verification error: {e}")
+        
+        # Handle specific errors
+        if "401" in str(e) or "403" in str(e):
+            return {
+                "error": f"Access denied: {domain} blocks automated access. This is common with Reuters and other sites with strict bot detection.",
+                "trust_score": {
+                    "score": 0,
+                    "label": "Error - Access Denied"
+                },
+                "recommendation": "Try accessing the article directly in your browser, or test with a different news source."
+            }
+        
+        return {
+            "error": f"Failed to verify article: {str(e)}",
+            "trust_score": {
+                "score": 0,
+                "label": "Error"
+            }
+        }
+
+# ============================================================================
+# CELERY TASK
+# ============================================================================
+
+@app.task(bind=True, name="credisource.verify_content")
+def verify_content(self, job_id: str, content_data: Dict):
+    """Main Celery task for content verification"""
+    import asyncio
+    
+    content_type = content_data.get("content_type")
+    url = content_data.get("url")
+    
+    print(f"🔍 Processing job {job_id} for {url} (type: {content_type})")
+    
+    if content_type == "news":
+        # Run async news verification
+        result = asyncio.run(verify_news_article(url))
+        print(f"✅ Completed job {job_id}: Score {result.get('trust_score', {}).get('score', 0)}")
+        return result
+    
+    # TODO: Add other content types (image, video, text)
+    return {"error": "Content type not implemented yet"}
+
+if __name__ == "__main__":
+    # For testing
+    import asyncio
+    
+    test_url = "https://www.bbc.co.uk/news/articles/c1m3zm9jnl1o"
+    result = asyncio.run(verify_news_article(test_url))
+    
+    import json
+    print(json.dumps(result, indent=2))
