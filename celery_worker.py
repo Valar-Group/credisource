@@ -1235,7 +1235,7 @@ def verify_news(url: str) -> Dict:
             "cross_reference": cross_ref["cross_ref_score"],
             "story_type": story_type,
             "weights_used": weights,
-            "explanation": f"{label} - {source_cred['verdict']}. {content_analysis['verdict']}. {cross_ref['verdict']}.",
+            "explanation": recommendation,
             "evidence": {
                 "source": {
                     "domain": domain,
