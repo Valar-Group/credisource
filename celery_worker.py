@@ -690,6 +690,14 @@ def detect_text_winston(text_content):
         print(f"🔍 Calling Winston AI...")
         print(f"📝 Text length: {len(text_content)} characters")
         
+        # CREDIT CONSERVATION: Skip Winston for very long articles
+        # Winston charges ~1 credit per character, so long articles are expensive
+        MAX_CHARS_FOR_WINSTON = 2000  # Only use Winston for articles under 2000 chars
+        if len(text_content) > MAX_CHARS_FOR_WINSTON:
+            print(f"⚠️ Article too long ({len(text_content)} chars) - would cost {len(text_content)} credits")
+            print(f"💡 Using free backup detector to conserve Winston credits")
+            return None  # Fall back to free detector
+        
         MAX_CHARS = 10000
         text_to_check = text_content[:MAX_CHARS] if len(text_content) > MAX_CHARS else text_content
         
@@ -749,6 +757,7 @@ def detect_text_huggingface(text_content):
     
     try:
         print(f"🤗 Calling OpenAI RoBERTa Large (backup)...")
+        print(f"⚠️ Note: This free detector has higher false positive rate than Winston AI")
         
         MAX_CHARS = 2000
         text_to_check = text_content[:MAX_CHARS] if len(text_content) > MAX_CHARS else text_content
@@ -789,13 +798,23 @@ def detect_text_huggingface(text_content):
                         ai_confidence = score
                         break
             
+            # IMPORTANT: RoBERTa has high false positive rate on professional writing
+            # Apply calibration to reduce false positives
+            if ai_confidence > 0.85:
+                print(f"⚠️ High AI confidence ({int(ai_confidence * 100)}%) - applying calibration")
+                print(f"💡 Professional/formal writing often triggers false positives")
+                # Reduce confidence for very high scores (likely false positive)
+                ai_confidence = 0.5 + (ai_confidence - 0.85) * 0.3  # Dampen extreme scores
+                print(f"📊 Calibrated AI confidence: {int(ai_confidence * 100)}%")
+            
             print(f"✅ Backup AI confidence: {ai_confidence:.2%}")
             
             return {
-                "provider": "OpenAI RoBERTa (Backup)",
+                "provider": "OpenAI RoBERTa (Backup - Free)",
                 "ai_confidence": ai_confidence,
                 "verdict": "AI-generated" if ai_confidence > 0.5 else "Human-written",
-                "raw_response": data
+                "raw_response": data,
+                "note": "Free backup detector - higher false positive rate on formal text"
             }
             
     except Exception as e:
@@ -1092,67 +1111,56 @@ def get_corroboration_verdict(score):
 
 
 def calculate_news_trust_score(source_check, text_detection, image_detections, cross_ref, article):
-    """YOUR PROPRIETARY SCORING ALGORITHM - THE SECRET SAUCE!"""
+    """
+    YOUR PROPRIETARY SCORING ALGORITHM - THE SECRET SAUCE!
+    
+    For NEWS verification, we DON'T use text AI detection because:
+    - Professional journalism triggers false positives
+    - Source credibility is more important
+    - Images and cross-reference are better signals
+    
+    Weighting:
+    - Source Credibility: 50% (most important!)
+    - Image Authenticity: 30% 
+    - Cross-Reference: 20%
+    """
     
     scores = []
     weights = []
     factors = []
     
-    # Factor 1: Source Credibility (40%)
+    # Factor 1: Source Credibility (50% - MOST IMPORTANT!)
     source_score = source_check["credibility_score"]
     scores.append(source_score)
-    weights.append(0.40)
+    weights.append(0.50)
     factors.append({
         "factor": "Source Credibility",
         "score": source_score,
-        "weight": "40%",
+        "weight": "50%",
         "verdict": source_check["verdict"]
     })
     
-    # Factor 2: Content Authenticity (30%)
-    if text_detection:
-        content_score = text_detection["trust_score"]["score"]
-        scores.append(content_score)
-        weights.append(0.30)
-        factors.append({
-            "factor": "Text Authenticity",
-            "score": content_score,
-            "weight": "30%",
-            "verdict": text_detection["trust_score"]["label"]
-        })
-    else:
-        # If text detection skipped (short article), use source score as proxy
-        print(f"💡 Text detection skipped - using source credibility as proxy")
-        scores.append(source_score)
-        weights.append(0.30)
-        factors.append({
-            "factor": "Text Authenticity",
-            "score": source_score,
-            "weight": "30%",
-            "verdict": "Not analyzed (article too short - based on source trust)"
-        })
-    
-    # Factor 3: Image Authenticity (15%)
+    # Factor 2: Image Authenticity (30%)
     if image_detections:
         avg_image_score = sum((1 - img["ai_confidence"]) * 100 for img in image_detections) / len(image_detections)
         scores.append(avg_image_score)
-        weights.append(0.15)
+        weights.append(0.30)
         factors.append({
             "factor": "Image Authenticity",
             "score": int(avg_image_score),
-            "weight": "15%",
+            "weight": "30%",
             "verdict": f"{len(image_detections)} images analyzed"
         })
     
-    # Factor 4: Cross-Reference (15%)
+    # Factor 3: Cross-Reference (20%)
     if cross_ref.get("checked"):
         corr_score = cross_ref.get("corroboration_score", 50)
         scores.append(corr_score)
-        weights.append(0.15)
+        weights.append(0.20)
         factors.append({
             "factor": "Cross-Reference",
             "score": corr_score,
-            "weight": "15%",
+            "weight": "20%",
             "verdict": cross_ref["verdict"]
         })
     
@@ -1197,16 +1205,13 @@ def verify_news(url):
     # Step 2: Check source credibility (YOUR DATABASE!)
     source_check = check_source_credibility(article["domain"])
     
-    # Step 3: Detect AI in text
+    # Step 3: SKIP TEXT AI DETECTION FOR NEWS
+    # News verification relies on source credibility, not text analysis
+    # Professional journalism often triggers false positives in AI detectors
+    # Your value is in: SOURCE DATABASE + IMAGE ANALYSIS + CROSS-REFERENCE
     text_detection = None
-    if article["text"] and len(article["text"]) > 300:
-        # Only run text detection on substantial text
-        # Skip very short snippets (live blogs, etc.) that cause false positives
-        if article["word_count"] > 100:  # At least 100 words
-            text_detection = detect_text(article["text"])
-        else:
-            print(f"⚠️ Skipping text AI detection - article too short ({article['word_count']} words)")
-            print(f"💡 Short articles (live blogs, updates) often trigger false positives")
+    print(f"💡 Skipping text AI detection for news articles")
+    print(f"📰 News verification focuses on: source credibility + images + cross-reference")
     
     # Step 4: Detect AI in images
     image_detections = []
