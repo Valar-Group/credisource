@@ -581,7 +581,7 @@ def get_source_credibility(domain: str, url: str, has_corroboration: bool = Fals
 # CONTENT QUALITY ANALYSIS
 # ============================================================================
 
-def analyze_content_quality(article_text: str, headline: str) -> Dict:
+    def analyze_content_quality(article_text: str, headline: str, source_score: int = None) -> Dict:
     """
     Analyze content for red flags indicating misinformation
     
@@ -639,10 +639,16 @@ def analyze_content_quality(article_text: str, headline: str) -> Dict:
         red_flags.append("No quotes or source attributions found")
         score -= 10
     
+    # Add contradiction warning if source is fake but content looks good
+    contradiction_warning = None
+    if source_score is not None and source_score < 20 and score > 70:
+        contradiction_warning = "⚠️ WARNING: Professional presentation does not equal truth. Fake news sites often mimic legitimate journalism to appear credible."
+    
     return {
         "quality_score": max(score, 0),
         "red_flags": red_flags,
-        "verdict": "Good quality" if score >= 70 else "Questionable quality" if score >= 40 else "Poor quality"
+        "verdict": "Good quality" if score >= 70 else "Questionable quality" if score >= 40 else "Poor quality",
+        "contradiction_warning": contradiction_warning
     }
 
 
@@ -906,7 +912,7 @@ def extract_search_terms(headline: str, article_text: str) -> str:
     return search_query
 
 
-def cross_reference_news(headline: str, article_text: str) -> Dict:
+def cross_reference_news(headline: str, article_text: str, source_score: int = None) -> Dict:
     """
     ENHANCED: Cross-reference story with other news sources
     
@@ -1013,8 +1019,14 @@ def cross_reference_news(headline: str, article_text: str) -> Dict:
             
             # Get context-aware score
             score_data = get_cross_reference_score(sources_count, story_type)
+
+            # Add contradiction warning
+contradiction_warning = None
+if source_score is not None and source_score < 20 and sources_count >= 3:
+    contradiction_warning = "⚠️ WARNING: Other sites may be repeating this story without verification. Strong corroboration doesn't validate content from known fake news sources."
             
             return {
+                "contradiction_warning": contradiction_warning,
                 "sources_found": sources_count,
                 "corroborating_sources": corroborating,
                 "cross_ref_score": score_data["score"],
@@ -1030,6 +1042,7 @@ def cross_reference_news(headline: str, article_text: str) -> Dict:
     score_data = get_cross_reference_score(0, story_type)
     
     return {
+        "contradiction_warning": None,
         "sources_found": 0,
         "corroborating_sources": [],
         "cross_ref_score": score_data["score"],
@@ -1118,7 +1131,7 @@ def verify_news(url: str) -> Dict:
         print(f"📝 ANALYZING CONTENT QUALITY...")
         print(f"{'-'*80}")
         
-        content_analysis = analyze_content_quality(article_text, headline)
+        content_analysis = analyze_content_quality(article_text, headline, source_cred["credibility_score"])
         
         print(f"   Quality score: {content_analysis['quality_score']}/100")
         if content_analysis['red_flags']:
@@ -1133,7 +1146,7 @@ def verify_news(url: str) -> Dict:
         print(f"🔍 CROSS-REFERENCING WITH OTHER SOURCES...")
         print(f"{'-'*80}")
         
-        cross_ref = cross_reference_news(headline, article_text)
+        cross_ref = cross_reference_news(headline, article_text, source_cred["credibility_score"])
         
         print(f"   Sources found: {cross_ref['sources_found']}")
         print(f"   Cross-ref score: {cross_ref['cross_ref_score']}/100")
