@@ -908,15 +908,34 @@ def calculate_final_score(source_cred: Dict, content_qual: Dict, cross_ref: Dict
 # CELERY TASK
 # ============================================================================
 
-@app.task(bind=True)
-def verify_news_article(self, url: str) -> Dict:
+@app.task(bind=True, name='credisource.verify_content')
+def verify_news_article(self, job_id: str, url: str, content_type: str) -> Dict:
     """
-    Main news verification task
+    Main verification task
+    Registered as 'credisource.verify_content' for compatibility with main.py
+    Args:
+        job_id: Job identifier
+        url: URL to verify
+        content_type: Type of content (news, image, video, text)
     """
     
     print(f"\n{'='*60}")
     print(f"🔍 VERIFYING: {url}")
+    print(f"📋 Job ID: {job_id}")
+    print(f"📌 Content Type: {content_type}")
     print(f"{'='*60}\n")
+    
+    # Only handle news for now
+    if content_type != 'news':
+        print(f"⚠️ Content type '{content_type}' not supported in new system yet")
+        return {
+            "error": f"Content type '{content_type}' not implemented",
+            "trust_score": {
+                "score": 0,
+                "label": "Unsupported",
+                "explanation": "Only 'news' content type is currently supported"
+            }
+        }
     
     try:
         # Extract article
