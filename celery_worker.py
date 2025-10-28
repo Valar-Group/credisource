@@ -581,7 +581,7 @@ def get_source_credibility(domain: str, url: str, has_corroboration: bool = Fals
 # CONTENT QUALITY ANALYSIS
 # ============================================================================
 
-    def analyze_content_quality(article_text: str, headline: str, source_score: int = None) -> Dict:
+def analyze_content_quality(article_text: str, headline: str, source_score: int = None) -> Dict:
     """
     Analyze content for red flags indicating misinformation
     
