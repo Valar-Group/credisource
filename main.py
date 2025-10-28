@@ -7,6 +7,7 @@ import os
 from celery import Celery
 import httpx
 from typing import Optional
+import base64
 
 app = FastAPI(
     title="CrediSource API",
@@ -84,7 +85,7 @@ async def verify_url(request: VerifyURLRequest):
         "message": f"Verification job queued. Check status at /job/{job_id}"
     }
 
-# NEW: Image Verification Endpoint (convenience endpoint for frontend)
+# Image Verification Endpoint
 @app.post("/verify/image", response_model=JobResponse)
 async def verify_image(request: VerifyURLRequest):
     """
@@ -94,7 +95,7 @@ async def verify_image(request: VerifyURLRequest):
     request.content_type = "image"
     return await verify_url(request)
 
-# NEW: Video Verification Endpoint (convenience endpoint for frontend)
+# Video Verification Endpoint
 @app.post("/verify/video", response_model=JobResponse)
 async def verify_video(request: VerifyURLRequest):
     """
@@ -104,7 +105,7 @@ async def verify_video(request: VerifyURLRequest):
     request.content_type = "video"
     return await verify_url(request)
 
-# Text Verification Endpoint (for pasted text)
+# Text Verification Endpoint
 @app.post("/verify/text", response_model=JobResponse)
 async def verify_text(request: VerifyTextRequest):
     """
@@ -140,7 +141,7 @@ async def verify_text(request: VerifyTextRequest):
         "message": f"Text verification queued. Check status at /job/{job_id}"
     }
 
-# File Upload Endpoint
+# File Upload Endpoint (FIXED VERSION)
 @app.post("/verify/file", response_model=JobResponse)
 async def verify_file(
     file: UploadFile = File(...),
@@ -151,28 +152,7 @@ async def verify_file(
     Supports: 
     - Images (jpg, png, webp, gif, bmp)
     - Videos (mp4, mov, avi, webm)
-    - Text (txt, text files or pasted text)
     """
-    # Validate file type based on content_type
-    if content_type == "image":
-        allowed_types = ["image/jpeg", "image/jpg", "image/png", "image/webp", "image/gif", "image/bmp", "image/heif", "image/avif"]
-        if file.content_type not in allowed_types:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Invalid image file type. Allowed: JPG, PNG, WEBP, GIF, BMP, HEIF, AVIF"
-            )
-    elif content_type == "video":
-        allowed_types = ["video/mp4", "video/quicktime", "video/x-msvideo", "video/webm", "video/x-matroska"]
-        if file.content_type not in allowed_types:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Invalid video file type. Allowed: MP4, MOV, AVI, WEBM, MKV"
-            )
-    elif content_type == "text":
-        # Text can be uploaded as .txt file or pasted directly
-        allowed_types = ["text/plain", "application/octet-stream"]
-        # Allow any content type for text since it's flexible
-    
     # Generate unique job ID
     job_id = str(uuid.uuid4())
     
@@ -180,13 +160,20 @@ async def verify_file(
         # Read file content
         file_content = await file.read()
         
-        # For text files, we can process directly
+        # Validate we got content
+        if not file_content or len(file_content) == 0:
+            raise HTTPException(status_code=400, detail="Empty file uploaded")
+        
+        # For text content (special case)
         if content_type == "text":
             try:
-                # Try to decode as text
                 text_content = file_content.decode('utf-8')
                 
-                # Queue text verification task directly
+                # Validate text length
+                if len(text_content) < 50:
+                    raise HTTPException(status_code=400, detail="Text too short (minimum 50 characters)")
+                
+                # Queue text verification
                 task = celery_app.send_task(
                     'credisource.verify_content',
                     args=[job_id, text_content, "text"],
@@ -201,9 +188,9 @@ async def verify_file(
             except UnicodeDecodeError:
                 raise HTTPException(status_code=400, detail="Invalid text file encoding. Please use UTF-8.")
         
-        # For images and videos, convert to base64
-        import base64
-        file_base64 = base64.b64encode(file_content).decode('utf-8')
+        # For images and videos - encode to base64
+        # FIXED: Use .decode('ascii') instead of .decode('utf-8')
+        file_base64 = base64.b64encode(file_content).decode('ascii')
         
         # Queue the job with file data
         task = celery_app.send_task(
@@ -218,8 +205,19 @@ async def verify_file(
             "message": f"File uploaded and verification queued. Check status at /job/{job_id}"
         }
         
+    except HTTPException:
+        # Re-raise HTTP exceptions (don't wrap them)
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error processing file: {str(e)}")
+        # Log the actual error for debugging
+        print(f"❌ Error processing file upload: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Error processing file: {str(e)}"
+        )
 
 # Job Status Endpoint
 @app.get("/job/{job_id}")
