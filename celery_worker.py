@@ -1058,37 +1058,37 @@ def verify_news(url: str) -> Dict:
             # Standard news
             weights = {"source": 0.40, "content": 0.35, "cross_ref": 0.25}
         
-        print(f"   Story type: {story_type}")
+print(f"   Story type: {story_type}")
         print(f"   Weights: Source {int(weights['source']*100)}%, Content {int(weights['content']*100)}%, Cross-ref {int(weights['cross_ref']*100)}%")
         
 final_score = (
-    source_cred["credibility_score"] * weights["source"] +
-    content_analysis["quality_score"] * weights["content"] +
-    cross_ref["cross_ref_score"] * weights["cross_ref"]
-)
-
-final_score = round(final_score)
-
-# ⚠️ SAFETY CAP: Prevent fake/unreliable sites from scoring high
-original_score = final_score
-
-if source_cred["credibility_score"] < 20:
-    final_score = min(final_score, 30)
-    if original_score != final_score:
-        print(f"   ⚠️ SAFETY CAP APPLIED: Source score {source_cred['credibility_score']}/100 too low")
-        print(f"   📉 Score reduced from {original_score} to {final_score}")
-
-elif source_cred["credibility_score"] < 40:
-    final_score = min(final_score, 50)
-    if original_score != final_score:
-        print(f"   ⚠️ LOW CREDIBILITY CAP: Source score {source_cred['credibility_score']}/100")
-        print(f"   📉 Score reduced from {original_score} to {final_score}")
-
-print(f"\n   Source: {source_cred['credibility_score']}/100 × {weights['source']} = {source_cred['credibility_score'] * weights['source']:.1f}")
-print(f"   Content: {content_analysis['quality_score']}/100 × {weights['content']} = {content_analysis['quality_score'] * weights['content']:.1f}")
-print(f"   Cross-ref: {cross_ref['cross_ref_score']}/100 × {weights['cross_ref']} = {cross_ref['cross_ref_score'] * weights['cross_ref']:.1f}")
-print(f"\n   🎯 FINAL TRUST SCORE: {final_score}/100")
+            source_cred["credibility_score"] * weights["source"] +
+            content_analysis["quality_score"] * weights["content"] +
+            cross_ref["cross_ref_score"] * weights["cross_ref"]
+        )
         
+        final_score = round(final_score)
+        
+        # ⚠️ SAFETY CAP: Prevent fake/unreliable sites from scoring high
+        original_score = final_score
+        
+        if source_cred["credibility_score"] < 20:
+            final_score = min(final_score, 30)
+            if original_score != final_score:
+                print(f"   ⚠️ SAFETY CAP APPLIED: Source score {source_cred['credibility_score']}/100 too low")
+                print(f"   📉 Score reduced from {original_score} to {final_score}")
+        
+        elif source_cred["credibility_score"] < 40:
+            final_score = min(final_score, 50)
+            if original_score != final_score:
+                print(f"   ⚠️ LOW CREDIBILITY CAP: Source score {source_cred['credibility_score']}/100")
+                print(f"   📉 Score reduced from {original_score} to {final_score}")
+        
+        print(f"\n   Source: {source_cred['credibility_score']}/100 × {weights['source']} = {source_cred['credibility_score'] * weights['source']:.1f}")
+        print(f"   Content: {content_analysis['quality_score']}/100 × {weights['content']} = {content_analysis['quality_score'] * weights['content']:.1f}")
+        print(f"   Cross-ref: {cross_ref['cross_ref_score']}/100 × {weights['cross_ref']} = {cross_ref['cross_ref_score'] * weights['cross_ref']:.1f}")
+        print(f"\n   🎯 FINAL TRUST SCORE: {final_score}/100")
+
         # Step 7: Generate label and verdict
         if final_score >= 90:
             label = "Highly Credible"
