@@ -1058,10 +1058,10 @@ def verify_news(url: str) -> Dict:
             # Standard news
             weights = {"source": 0.40, "content": 0.35, "cross_ref": 0.25}
         
-print(f"   Story type: {story_type}")
+        print(f"   Story type: {story_type}")
         print(f"   Weights: Source {int(weights['source']*100)}%, Content {int(weights['content']*100)}%, Cross-ref {int(weights['cross_ref']*100)}%")
         
-final_score = (
+        final_score = (
             source_cred["credibility_score"] * weights["source"] +
             content_analysis["quality_score"] * weights["content"] +
             cross_ref["cross_ref_score"] * weights["cross_ref"]
