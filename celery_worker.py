@@ -762,6 +762,118 @@ def get_cross_reference_score(sources_found: int, story_type: str) -> Dict:
         "verdict": verdict
     }
 
+# ============================================================================
+# ASSERTIVE VERDICT GENERATION
+# ============================================================================
+
+def get_assertive_label_and_verdict(final_score: int, source_score: int, source_type: str, 
+                                     content_score: int, cross_ref_score: int, 
+                                     story_type: str) -> dict:
+    """
+    Generate ASSERTIVE labels and verdicts based on scores
+    No more wishy-washy "mixed reliability" - tell it like it is!
+    """
+    
+    # CRITICAL: Known fake news sites
+    if source_type == "fake-news":
+        return {
+            "label": "FAKE NEWS",
+            "verdict": "⚠️ DANGER: This is a KNOWN FAKE NEWS SITE. This source has been identified as deliberately spreading misinformation. DO NOT trust any content from this domain.",
+            "warning_level": "critical",
+            "should_share": False,
+            "recommendation": "Cross-check this story with credible news sources like BBC, Reuters, or AP News before believing or sharing."
+        }
+    
+    # CRITICAL: Very low source credibility (< 20)
+    if source_score < 20:
+        return {
+            "label": "NOT CREDIBLE",
+            "verdict": f"⚠️ WARNING: This source has EXTREMELY LOW credibility ({source_score}/100). Even with {'good' if content_score > 70 else 'poor'} content quality, the publisher is known to be unreliable. Treat any claims with extreme skepticism.",
+            "warning_level": "critical",
+            "should_share": False,
+            "recommendation": "Verify this information with established news organizations before acting on it."
+        }
+    
+    # SEVERE: Low credibility source (20-39)
+    elif source_score < 40:
+        return {
+            "label": "LOW CREDIBILITY",
+            "verdict": f"⚠️ CAUTION: This source has low credibility ({source_score}/100). Known issues with accuracy and bias. Content quality: {content_score}/100. Cross-check before trusting.",
+            "warning_level": "high",
+            "should_share": False,
+            "recommendation": "Compare this story with reports from mainstream news sources."
+        }
+    
+    # MODERATE: Questionable (40-49)
+    elif final_score < 50:
+        return {
+            "label": "QUESTIONABLE",
+            "verdict": f"⚠️ Be Skeptical: This story scores {final_score}/100. Source credibility is {source_score}/100. Verify key claims independently.",
+            "warning_level": "medium",
+            "should_share": False,
+            "recommendation": "Look for corroboration from higher-quality sources."
+        }
+    
+    # ACCEPTABLE: Probably credible (50-69)
+    elif final_score < 70:
+        return {
+            "label": "Probably Credible",
+            "verdict": f"✓ Likely Accurate: This story scores {final_score}/100. Source is {_get_source_description(source_score)}. Content appears {'well-sourced' if content_score > 70 else 'adequate'}.",
+            "warning_level": "low",
+            "should_share": True,
+            "recommendation": "Generally reliable, but verify important claims."
+        }
+    
+    # GOOD: Credible (70-89)
+    elif final_score < 90:
+        return {
+            "label": "Credible",
+            "verdict": f"✅ Trustworthy: This story scores {final_score}/100 from a {_get_source_description(source_score)} source. Content is {_get_quality_description(content_score)}.",
+            "warning_level": "none",
+            "should_share": True,
+            "recommendation": "Reliable source. Safe to reference."
+        }
+    
+    # EXCELLENT: Highly credible (90+)
+    else:
+        return {
+            "label": "Highly Credible",
+            "verdict": f"✅ VERIFIED: This story scores {final_score}/100. Published by a highly credible source ({source_score}/100) with excellent content quality ({content_score}/100).",
+            "warning_level": "none",
+            "should_share": True,
+            "recommendation": "Top-tier journalism. Highly reliable."
+        }
+
+
+def _get_source_description(score: int) -> str:
+    """Get human-readable source quality description"""
+    if score >= 90:
+        return "highly credible"
+    elif score >= 70:
+        return "credible"
+    elif score >= 50:
+        return "moderately reliable"
+    elif score >= 40:
+        return "low credibility"
+    else:
+        return "unreliable"
+
+
+def _get_quality_description(score: int) -> str:
+    """Get human-readable content quality description"""
+    if score >= 90:
+        return "excellent quality"
+    elif score >= 70:
+        return "good quality"
+    elif score >= 50:
+        return "adequate quality"
+    else:
+        return "poor quality"
+
+
+# ============================================================================
+# NEWS VERIFICATION (MAIN FUNCTION)
+# ============================================================================
 
 def extract_search_terms(headline: str, article_text: str) -> str:
     """
@@ -1088,27 +1200,36 @@ def verify_news(url: str) -> Dict:
         print(f"   Content: {content_analysis['quality_score']}/100 × {weights['content']} = {content_analysis['quality_score'] * weights['content']:.1f}")
         print(f"   Cross-ref: {cross_ref['cross_ref_score']}/100 × {weights['cross_ref']} = {cross_ref['cross_ref_score'] * weights['cross_ref']:.1f}")
         print(f"\n   🎯 FINAL TRUST SCORE: {final_score}/100")
-
-        # Step 7: Generate label and verdict
-        if final_score >= 90:
-            label = "Highly Credible"
-        elif final_score >= 70:
-            label = "Credible"
-        elif final_score >= 50:
-            label = "Probably Credible"
-        elif final_score >= 30:
-            label = "Mixed Reliability"
-        else:
-            label = "Low Credibility"
+        
+        # Step 7: Generate ASSERTIVE label and verdict
+        verdict_data = get_assertive_label_and_verdict(
+            final_score=final_score,
+            source_score=source_cred["credibility_score"],
+            source_type=source_cred.get("type", "unknown"),
+            content_score=content_analysis["quality_score"],
+            cross_ref_score=cross_ref["cross_ref_score"],
+            story_type=story_type
+        )
+        
+        label = verdict_data["label"]
+        verdict = verdict_data["verdict"]
+        warning_level = verdict_data["warning_level"]
+        should_share = verdict_data["should_share"]
+        recommendation = verdict_data["recommendation"]
         
         print(f"   📋 LABEL: {label}")
+        print(f"   ⚠️  WARNING LEVEL: {warning_level}")
+        print(f"   💡 RECOMMENDATION: {recommendation}")
         print(f"\n{'='*80}\n")
         
         # Build comprehensive result
         result = {
             "trust_score": final_score,
             "label": label,
-            "verdict": f"Based on source credibility ({source_cred['credibility_score']}/100), content quality ({content_analysis['quality_score']}/100), and cross-reference ({cross_ref['cross_ref_score']}/100)",
+            "verdict": verdict,
+            "warning_level": warning_level,
+            "should_share": should_share,
+            "recommendation": recommendation,
             "source_credibility": source_cred["credibility_score"],
             "content_quality": content_analysis["quality_score"],
             "cross_reference": cross_ref["cross_ref_score"],
