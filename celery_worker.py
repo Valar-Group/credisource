@@ -29,6 +29,10 @@ GOOGLE_SEARCH_ENGINE_ID = os.getenv("GOOGLE_SEARCH_ENGINE_ID")
 HUGGINGFACE_API_KEY = os.getenv("HUGGINGFACE_API_KEY")
 WINSTON_API_KEY = os.getenv("WINSTON_API_KEY")
 
+# NEW: SightEngine API Keys
+SIGHTENGINE_API_USER = os.getenv("SIGHTENGINE_API_USER")
+SIGHTENGINE_API_SECRET = os.getenv("SIGHTENGINE_API_SECRET")
+
 @app.task(name='credisource.test_task')
 def test_task():
     return {"status": "Worker is running!"}
@@ -98,6 +102,117 @@ def verify_content_file_task(job_id, file_base64, filename, content_type):
             "status": "failed",
             "error": str(e)
         }
+
+
+# ============================================================
+# NEW: SIGHTENGINE DETECTION FUNCTIONS
+# ============================================================
+
+def detect_with_sightengine_url(image_url):
+    """
+    SightEngine AI detection via URL
+    Returns: AI confidence 0-1 (0=human, 1=AI)
+    """
+    if not SIGHTENGINE_API_USER or not SIGHTENGINE_API_SECRET:
+        print("⚠️ SightEngine credentials not configured")
+        return None
+    
+    try:
+        print(f"👁️ Calling SightEngine (URL)...")
+        
+        with httpx.Client(timeout=30.0) as client:
+            response = client.get(
+                "https://api.sightengine.com/1.0/check.json",
+                params={
+                    'models': 'genai',
+                    'api_user': SIGHTENGINE_API_USER,
+                    'api_secret': SIGHTENGINE_API_SECRET,
+                    'url': image_url
+                }
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                print(f"👁️ SightEngine response: {data}")
+                
+                # Extract AI probability
+                ai_prob = data.get('type', {}).get('ai_generated', 0.5)
+                
+                print(f"✅ SightEngine: {int((1-ai_prob)*100)}% human ({int(ai_prob*100)}% AI)")
+                
+                return {
+                    "provider": "SightEngine",
+                    "ai_confidence": ai_prob,
+                    "verdict": "AI-generated" if ai_prob > 0.5 else "Real",
+                    "raw_response": data
+                }
+            else:
+                print(f"⚠️ SightEngine error: {response.status_code}")
+                print(f"⚠️ Response: {response.text}")
+                return None
+                
+    except Exception as e:
+        print(f"⚠️ SightEngine exception: {str(e)}")
+        traceback.print_exc()
+        return None
+
+
+def detect_with_sightengine_file(image_data, filename):
+    """
+    SightEngine AI detection via file upload
+    Returns: AI confidence 0-1 (0=human, 1=AI)
+    """
+    if not SIGHTENGINE_API_USER or not SIGHTENGINE_API_SECRET:
+        print("⚠️ SightEngine credentials not configured")
+        return None
+    
+    try:
+        print(f"👁️ Calling SightEngine (file upload)...")
+        
+        # Create a temporary file-like object for the upload
+        import io
+        file_obj = io.BytesIO(image_data)
+        
+        with httpx.Client(timeout=30.0) as client:
+            response = client.post(
+                "https://api.sightengine.com/1.0/check.json",
+                data={
+                    'models': 'genai',
+                    'api_user': SIGHTENGINE_API_USER,
+                    'api_secret': SIGHTENGINE_API_SECRET
+                },
+                files={
+                    'media': (filename, file_obj, 'image/jpeg')
+                }
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                print(f"👁️ SightEngine file response: {data}")
+                
+                ai_prob = data.get('type', {}).get('ai_generated', 0.5)
+                
+                print(f"✅ SightEngine: {int((1-ai_prob)*100)}% human")
+                
+                return {
+                    "provider": "SightEngine",
+                    "ai_confidence": ai_prob,
+                    "verdict": "AI-generated" if ai_prob > 0.5 else "Real",
+                    "raw_response": data
+                }
+            else:
+                print(f"⚠️ SightEngine error: {response.status_code}")
+                return None
+                
+    except Exception as e:
+        print(f"⚠️ SightEngine file exception: {str(e)}")
+        traceback.print_exc()
+        return None
+
+
+# ============================================================
+# EXISTING DETECTION FUNCTIONS (keeping for backup)
+# ============================================================
 
 def reverse_image_search(url):
     """Use Google to find where this image appears online"""
@@ -186,7 +301,7 @@ def reverse_image_search(url):
 
 
 def detect_with_huggingface(image_data):
-    """Detect AI using Hugging Face SDXL detector"""
+    """Detect AI using Hugging Face SDXL detector - BACKUP METHOD"""
     
     if not HUGGINGFACE_API_KEY:
         print("⚠️ No Hugging Face API key, skipping")
@@ -195,7 +310,7 @@ def detect_with_huggingface(image_data):
     try:
         import base64
         
-        print(f"🤗 Calling Hugging Face SDXL detector...")
+        print(f"🤗 Calling Hugging Face SDXL detector (backup)...")
         
         # Convert image to base64
         image_b64 = base64.b64encode(image_data).decode('utf-8')
@@ -215,15 +330,12 @@ def detect_with_huggingface(image_data):
             print(f"🤗 HF Response status: {response.status_code}")
             
             if response.status_code == 503:
-                print("⏳ Model loading, retrying in 10 seconds...")
+                print("⏳ Model loading, waiting 10 seconds...")
                 import time
                 time.sleep(10)
                 response = client.post(
                     "https://api-inference.huggingface.co/models/Organika/sdxl-detector",
-                    headers={
-                        "Authorization": f"Bearer {HUGGINGFACE_API_KEY}",
-                        "Content-Type": "application/json"
-                    },
+                    headers={"Authorization": f"Bearer {HUGGINGFACE_API_KEY}"},
                     json={"inputs": image_b64}
                 )
             
@@ -234,640 +346,371 @@ def detect_with_huggingface(image_data):
             data = response.json()
             print(f"🤗 HF Response: {data}")
             
-            # Parse response - format: [{"label": "artificial", "score": 0.99}]
-            artificial_score = 0.5
+            # Parse response
+            ai_confidence = 0.5
             if isinstance(data, list) and len(data) > 0:
-                for item in data:
-                    if item.get("label") == "artificial":
-                        artificial_score = item.get("score", 0.5)
+                results = data[0] if isinstance(data[0], list) else data
+                for result in results:
+                    label = result.get("label", "")
+                    score = result.get("score", 0.5)
+                    if label in ["artificial", "AI", "LABEL_1"]:
+                        ai_confidence = score
                         break
             
-            print(f"✅ HF AI confidence: {artificial_score}")
+            print(f"✅ HF AI confidence: {ai_confidence:.2%}")
             
             return {
-                "provider": "Hugging Face",
-                "ai_confidence": artificial_score,
-                "verdict": "AI-generated" if artificial_score > 0.5 else "Real"
+                "provider": "Hugging Face (Backup)",
+                "ai_confidence": ai_confidence,
+                "verdict": "AI-generated" if ai_confidence > 0.5 else "Real",
+                "raw_response": data
             }
             
     except Exception as e:
-        print(f"⚠️ HF detection error: {str(e)}")
+        print(f"⚠️ Hugging Face error: {str(e)}")
         return None
 
 
-def detect_image_video_from_data(file_data, filename, is_video=False):
-    """Detect AI in image/video from raw file data"""
+def detect_with_aiornot(url_or_data, is_file=False, is_video=False):
+    """Detect AI using AIorNOT API - BACKUP METHOD"""
     
     if not AIORNOT_API_KEY:
-        return create_mock_result(50, "No AIorNOT API key configured")
+        print("⚠️ No AIorNOT API key, skipping")
+        return None
     
     try:
-        import base64
-        
-        print(f"🔍 Detecting {'video' if is_video else 'image'} from uploaded file: {filename}")
-        
-        # Choose correct endpoint based on content type
-        if is_video:
-            endpoint = "https://api.aiornot.com/v2/video/sync"
-            file_field_name = "video"
-            timeout = 120.0  # Video can take up to 2 minutes
-        else:
-            endpoint = "https://api.aiornot.com/v1/reports/image"
-            file_field_name = "object"
-            timeout = 60.0
-        
-        # Prepare multipart form data
-        with httpx.Client(timeout=timeout) as client:
-            # AIorNOT expects file upload
-            files = {
-                file_field_name: (filename, file_data, 'application/octet-stream')
-            }
-            
-            print(f"📤 Uploading to AIorNOT ({endpoint})...")
-            response = client.post(
-                endpoint,
-                headers={
-                    "Authorization": f"Bearer {AIORNOT_API_KEY}"
-                },
-                files=files
-            )
-            
-            print(f"📥 AIorNOT response: {response.status_code}")
-            
-            if response.status_code != 200:
-                print(f"⚠️ AIorNOT error: {response.text}")
-                return create_mock_result(50, f"AIorNOT API Error: {response.status_code}")
-            
-            data = response.json()
-            print(f"✅ AIorNOT response data: {data}")
-            
-            # Parse response based on content type
-            if is_video:
-                # Video response format
-                report = data.get("report", {})
-                ai_video = report.get("ai_video", {})
-                ai_voice = report.get("ai_voice", {})
-                
-                # Use video confidence as primary
-                aiornot_confidence = ai_video.get("confidence", 0.5)
-                is_detected = ai_video.get("is_detected", False)
-                
-                # Also check voice if available
-                voice_confidence = ai_voice.get("confidence", 0)
-                
-                # Average video and voice if both available
-                if voice_confidence > 0:
-                    aiornot_confidence = (aiornot_confidence + voice_confidence) / 2
-                
-                verdict = "AI-generated" if is_detected else "Real"
-                
-            else:
-                # Image response format
-                ai_generated = data.get("report", {}).get("ai_generated", {})
-                aiornot_confidence = ai_generated.get("confidence", 0.5)
-                verdict = ai_generated.get("verdict", "unknown")
-            
-            # Get Hugging Face result for images only (not videos)
-            if not is_video:
-                hf_result = detect_with_huggingface(file_data)
-            else:
-                hf_result = None
-            
-            # Collect all results
-            all_results = []
-            
-            # AIorNOT result
-            all_results.append({
-                "provider": "AIorNOT",
-                "ai_confidence": aiornot_confidence,
-                "verdict": verdict
-            })
-            
-            # Hugging Face result (images only)
-            if hf_result:
-                all_results.append(hf_result)
-            
-            # Calculate ensemble confidence
-            combined_ai_confidence = sum(r["ai_confidence"] for r in all_results) / len(all_results)
-            
-            # Apply amplification to make scores more decisive
-            combined_ai_confidence = amplify_confidence(combined_ai_confidence)
-            
-            # Calculate trust score (inverse of AI confidence)
-            trust_score = int((1 - combined_ai_confidence) * 100)
-            label_info = get_label_with_explanation(trust_score)
-            
-            print(f"📊 Final trust score: {trust_score} ({label_info['label']})")
-            
-            # Build evidence
-            evidence = []
-            
-            for result in all_results:
-                provider = result["provider"]
-                ai_conf = result["ai_confidence"]
-                verdict = result.get("verdict", "unknown")
-                
-                signal = f"{provider}: {verdict} ({int(ai_conf * 100)}% AI confidence)"
-                
-                evidence.append({
-                    "category": f"AI Detection - {provider}",
-                    "signal": signal,
-                    "confidence": float(ai_conf),
-                    "details": result
-                })
-            
-            # Add combined result
-            evidence.insert(0, {
-                "category": "Combined Analysis",
-                "signal": f"Ensemble score from {len(all_results)} detectors: {int(combined_ai_confidence * 100)}% AI confidence",
-                "confidence": float(combined_ai_confidence),
-                "details": {
-                    "num_detectors": len(all_results),
-                    "combined_confidence": combined_ai_confidence
-                }
-            })
-            
-            return {
-                "trust_score": {
-                    "score": trust_score,
-                    "label": label_info["label"],
-                    "explanation": label_info["explanation"],
-                    "confidence": label_info["confidence"],
-                    "recommended_action": label_info["action"],
-                    "confidence_band": [max(0, trust_score - 10), min(100, trust_score + 10)]
-                },
-                "evidence": evidence,
-                "metadata": {
-                    "filename": filename,
-                    "provider": "AIorNOT" if is_video else "Ensemble Detection",
-                    "content_type": "video" if is_video else "image",
-                    "report_id": data.get("id")
-                }
-            }
-            
-    except Exception as e:
-        error_msg = f"Detection error: {str(e)}"
-        print(f"⚠️ {error_msg}")
-        print(f"Full traceback: {traceback.format_exc()}")
-        return create_mock_result(50, error_msg)
-
-
-def download_video_with_ytdlp(url, job_id=None):
-    """
-    Download video from social media platforms using yt-dlp Python API
-    Supports: YouTube, TikTok, Twitter/X, Instagram, Facebook, etc.
-    
-    Returns: (video_file_path, error_message)
-    """
-    
-    print(f"📥 Attempting to download video from: {url}")
-    
-    # Import yt-dlp Python module
-    try:
-        import yt_dlp
-    except ImportError:
-        print(f"❌ yt-dlp not installed")
-        return None, "yt-dlp package not available"
-    
-    # Create temp directory for downloads
-    temp_dir = tempfile.mkdtemp(prefix="credisource_video_")
-    output_template = os.path.join(temp_dir, "video.%(ext)s")
-    
-    try:
-        # Configure yt-dlp options
-        ydl_opts = {
-            'format': 'best[ext=mp4]/best',  # Prefer MP4
-            'outtmpl': output_template,
-            'noplaylist': True,  # Don't download playlists
-            'quiet': True,
-            'no_warnings': True,
-            'socket_timeout': 60,
-        }
-        
-        print(f"🎬 Downloading video with yt-dlp...")
-        
-        # Download using yt-dlp Python API
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            
-            if not info:
-                print(f"❌ Could not extract video info")
-                try:
-                    import shutil
-                    shutil.rmtree(temp_dir)
-                except:
-                    pass
-                return None, "Could not extract video information"
-        
-        # Find the downloaded video file
-        video_files = [f for f in os.listdir(temp_dir) if f.startswith("video.")]
-        
-        if not video_files:
-            print(f"❌ No video file found after download")
-            try:
-                import shutil
-                shutil.rmtree(temp_dir)
-            except:
-                pass
-            return None, "Video download succeeded but file not found"
-        
-        video_path = os.path.join(temp_dir, video_files[0])
-        file_size = os.path.getsize(video_path)
-        
-        print(f"✅ Video downloaded successfully!")
-        print(f"📦 File: {video_path}")
-        print(f"📊 Size: {file_size / 1024 / 1024:.2f} MB")
-        
-        return video_path, None
-        
-    except Exception as e:
-        print(f"❌ Error downloading video: {str(e)}")
-        print(f"Traceback: {traceback.format_exc()}")
-        try:
-            import shutil
-            shutil.rmtree(temp_dir)
-        except:
-            pass
-        return None, f"Error: {str(e)}"
-
-
-def detect_image_video(url):
-    """Detect AI in image/video from URL using AIorNOT with ensemble scoring"""
-    
-    if not AIORNOT_API_KEY:
-        return create_mock_result(50, "No AIorNOT API key configured")
-    
-    # Detect if this is a social media video URL that needs downloading
-    video_platforms = [
-        'youtube.com', 'youtu.be',
-        'tiktok.com',
-        'twitter.com', 'x.com',
-        'instagram.com',
-        'facebook.com', 'fb.watch',
-        'reddit.com',
-        'vimeo.com',
-        'dailymotion.com'
-    ]
-    
-    is_social_video = any(platform in url.lower() for platform in video_platforms)
-    video_file_path = None
-    
-    try:
-        # If it's a social media video, download it first
-        if is_social_video:
-            print(f"🎥 Detected social media video URL, downloading...")
-            video_file_path, error = download_video_with_ytdlp(url)
-            
-            if error:
-                print(f"❌ Could not download video: {error}")
-                return create_mock_result(50, f"Video download failed: {error}")
-            
-            print(f"✅ Video downloaded, uploading to AIorNOT...")
-            
-            # Upload the downloaded video file to AIorNOT
-            with open(video_file_path, 'rb') as video_file:
-                video_data = video_file.read()
-            
-            # Use the file upload method
-            result = detect_image_video_from_data(video_data, "video.mp4", is_video=True)
-            
-            # Clean up downloaded file
-            try:
-                import shutil
-                temp_dir = os.path.dirname(video_file_path)
-                shutil.rmtree(temp_dir)
-                print(f"🧹 Cleaned up temporary video file")
-            except Exception as e:
-                print(f"⚠️ Could not clean up temp file: {e}")
-            
-            return result
-        
-        # Otherwise, for direct URLs, download and process
-        print(f"🔍 Processing direct URL: {url}")
-        
-        # Check if URL ends with video extension
-        video_extensions = ['.mp4', '.mov', '.avi', '.mkv', '.webm', '.flv', '.wmv', '.m4v']
-        is_video_url = any(url.lower().endswith(ext) for ext in video_extensions)
-        
-        if is_video_url:
-            # Download video file
-            print(f"🎥 Detected direct video URL, downloading...")
-            with httpx.Client(timeout=120.0) as client:
-                video_response = client.get(url)
-                if video_response.status_code != 200:
-                    return create_mock_result(50, f"Could not download video: {video_response.status_code}")
-                
-                video_data = video_response.content
-                print(f"✅ Video downloaded ({len(video_data)} bytes)")
-                
-                # Process as video
-                return detect_image_video_from_data(video_data, "video.mp4", is_video=True)
-        
-        # Otherwise it's an image URL - use image endpoint
-        print(f"🔍 Calling AIorNOT for image URL: {url}")
+        content_type = "video" if is_video else "image"
+        print(f"🔍 Calling AIorNOT API ({content_type})...")
         
         with httpx.Client(timeout=60.0) as client:
-            response = client.post(
-                "https://api.aiornot.com/v1/reports/image",
-                headers={
-                    "Authorization": f"Bearer {AIORNOT_API_KEY}",
-                    "Content-Type": "application/json"
-                },
-                json={"object": url}
-            )
+            if is_file:
+                # File upload
+                import io
+                file_obj = io.BytesIO(url_or_data) if isinstance(url_or_data, bytes) else url_or_data
+                
+                response = client.post(
+                    "https://api.aiornot.com/v1/reports/file",
+                    headers={"Authorization": f"Bearer {AIORNOT_API_KEY}"},
+                    files={"object": ("file", file_obj, f"{content_type}/jpeg")}
+                )
+            else:
+                # URL
+                response = client.post(
+                    "https://api.aiornot.com/v1/reports/url",
+                    headers={
+                        "Authorization": f"Bearer {AIORNOT_API_KEY}",
+                        "Content-Type": "application/json"
+                    },
+                    json={"url": url_or_data}
+                )
             
-            print(f"📥 AIorNOT response status: {response.status_code}")
+            print(f"🔍 AIorNOT Response status: {response.status_code}")
             
             if response.status_code != 200:
                 print(f"⚠️ AIorNOT error: {response.text}")
-                return create_mock_result(50, f"API Error: {response.status_code}")
-            
-            data = response.json()
-            print(f"✅ Got AIorNOT response")
-            
-            # Download image for Hugging Face
-            image_response = client.get(url, timeout=30.0)
-            if image_response.status_code == 200:
-                image_data = image_response.content
-                hf_result = detect_with_huggingface(image_data)
-            else:
-                print(f"⚠️ Could not download image for HF: {image_response.status_code}")
-                hf_result = None
-            
-            # Google reverse image search
-            google_result = reverse_image_search(url)
-            
-            # Collect all AI detection results
-            all_results = []
-            
-            # AIorNOT result
-            ai_generated = data.get("report", {}).get("ai_generated", {})
-            aiornot_confidence = ai_generated.get("confidence", 0.5)
-            all_results.append({
-                "provider": "AIorNOT",
-                "ai_confidence": aiornot_confidence,
-                "verdict": ai_generated.get("verdict", "unknown")
-            })
-            
-            # Hugging Face result
-            if hf_result:
-                all_results.append(hf_result)
-            
-            # Calculate ensemble confidence (average of all detectors)
-            combined_ai_confidence = sum(r["ai_confidence"] for r in all_results) / len(all_results)
-            
-            # Apply amplification to make scores more decisive
-            combined_ai_confidence = amplify_confidence(combined_ai_confidence)
-            
-            # Factor in Google provenance if suspicious
-            provenance_evidence = None
-            if google_result and google_result.get("found"):
-                suspicious_ratio = google_result.get("suspicious_ratio", 0)
-                if suspicious_ratio > 0.3:  # More than 30% suspicious
-                    # Increase AI confidence slightly based on suspicious findings
-                    provenance_boost = suspicious_ratio * 0.15  # Max 15% boost
-                    combined_ai_confidence = min(1.0, combined_ai_confidence + provenance_boost)
-                    
-                    provenance_evidence = {
-                        "category": "Provenance Analysis",
-                        "signal": f"Found {google_result['num_results']} mentions online, {google_result['suspicious_count']} contain AI-related keywords",
-                        "confidence": suspicious_ratio,
-                        "details": google_result
-                    }
-            
-            # Calculate trust score (inverse of AI confidence, scaled 0-100)
-            trust_score = int((1 - combined_ai_confidence) * 100)
-            label_info = get_label_with_explanation(trust_score)
-            
-            print(f"📊 Final trust score: {trust_score} ({label_info['label']})")
-            
-            # Get generator info if available
-            generator_info = ai_generated.get("generator", {})
-            top_generators = []
-            if generator_info:
-                # Get top 3 generators by confidence
-                # Handle both dict and float values
-                try:
-                    sorted_items = []
-                    for gen_name, gen_value in generator_info.items():
-                        # Extract confidence - might be a dict or a float
-                        if isinstance(gen_value, dict):
-                            confidence = gen_value.get("confidence", 0)
-                        else:
-                            confidence = float(gen_value) if gen_value else 0
-                        sorted_items.append((gen_name, confidence))
-                    
-                    # Sort by confidence and take top 3
-                    sorted_items.sort(key=lambda x: x[1], reverse=True)
-                    top_generators = [f"{gen}: {int(conf*100)}%" for gen, conf in sorted_items[:3] if conf > 0.5]
-                except Exception as gen_error:
-                    print(f"⚠️ Error parsing generators: {gen_error}")
-                    top_generators = []
-            
-            # Build evidence from all results
-            evidence = []
-            
-            for result in all_results:
-                provider = result["provider"]
-                ai_conf = result["ai_confidence"]
-                verdict = result.get("verdict", "unknown")
-                
-                signal = f"{provider}: {verdict} ({int(ai_conf * 100)}% AI confidence)"
-                
-                # Add generator info for AIorNOT
-                if provider == "AIorNOT" and top_generators:
-                    signal += f" - Detected: {', '.join(top_generators)}"
-                
-                evidence.append({
-                    "category": f"AI Detection - {provider}",
-                    "signal": signal,
-                    "confidence": float(ai_conf),
-                    "details": result
-                })
-            
-            # Add combined result
-            evidence.insert(0, {
-                "category": "Combined Analysis",
-                "signal": f"Ensemble score from {len(all_results)} detectors: {int(combined_ai_confidence * 100)}% AI confidence",
-                "confidence": float(combined_ai_confidence),
-                "details": {
-                    "num_detectors": len(all_results),
-                    "combined_confidence": combined_ai_confidence
-                }
-            })
-            
-            # Add provenance evidence if available
-            if provenance_evidence:
-                evidence.append(provenance_evidence)
-            
-            return {
-                "trust_score": {
-                    "score": trust_score,
-                    "label": label_info["label"],
-                    "explanation": label_info["explanation"],
-                    "confidence": label_info["confidence"],
-                    "recommended_action": label_info["action"],
-                    "confidence_band": [max(0, trust_score - 10), min(100, trust_score + 10)]
-                },
-                "evidence": evidence,
-                "metadata": {
-                    "url": url,
-                    "provider": "AI or Not v2",
-                    "content_type": "image",
-                    "report_id": data.get("id")
-                }
-            }
-            
-    except Exception as e:
-        error_msg = f"AI or Not detection error: {str(e)}"
-        print(f"⚠️ {error_msg}")
-        print(f"Full traceback: {traceback.format_exc()}")
-        return create_mock_result(50, error_msg)
-
-
-# ============================================================
-# TEXT DETECTION - USING WINSTON AI
-# ============================================================
-
-def detect_text_winston(text_content):
-    """
-    Detect AI-generated text using Winston AI
-    Uses JSON-RPC 2.0 format via MCP server
-    High accuracy detection with 2,500 free credits
-    """
-    
-    if not WINSTON_API_KEY:
-        print("⚠️ No Winston AI API key")
-        return None
-    
-    try:
-        print(f"🔍 Calling Winston AI for text detection...")
-        print(f"📝 Text length: {len(text_content)} characters")
-        
-        # Winston AI requires minimum 300 characters for text detection
-        if len(text_content) < 300:
-            print(f"⚠️ Text too short ({len(text_content)} chars), Winston AI requires 300+ chars")
-            print(f"   Falling back to backup detector")
-            return None
-        
-        # Winston AI MCP endpoint using JSON-RPC 2.0
-        with httpx.Client(timeout=30.0) as client:
-            response = client.post(
-                "https://api.gowinston.ai/mcp/v1",
-                headers={
-                    "Content-Type": "application/json",
-                    "Accept": "application/json"
-                },
-                json={
-                    "jsonrpc": "2.0",
-                    "id": 1,
-                    "method": "tools/call",
-                    "params": {
-                        "name": "ai-text-detection",
-                        "arguments": {
-                            "text": text_content,
-                            "apiKey": WINSTON_API_KEY
-                        }
-                    }
-                }
-            )
-            
-            print(f"🔍 Winston AI response status: {response.status_code}")
-            
-            if response.status_code != 200:
-                print(f"⚠️ Winston AI error: {response.status_code} - {response.text}")
                 return None
             
             data = response.json()
-            print(f"✅ Winston AI response: {data}")
+            print(f"🔍 AIorNOT Response: {data}")
             
-            # Parse Winston AI JSON-RPC response
-            # Expected format: {"jsonrpc": "2.0", "id": 1, "result": {"content": [{"text": "..."}]}}
-            result = data.get("result", {})
+            # Parse response
+            verdict = data.get("verdict", "unknown")
+            ai_confidence = 0.5
             
-            # Extract the actual detection result from content
-            content = result.get("content", [])
-            if content and len(content) > 0:
-                # Parse the text response which contains JSON as a string
-                text_result = content[0].get("text", "")
-                print(f"📊 Winston result text (first 500 chars): {text_result[:500]}")
+            if verdict == "ai":
+                ai_confidence = 0.9
+            elif verdict == "human":
+                ai_confidence = 0.1
+            elif verdict == "unknown":
+                ai_confidence = 0.5
+            
+            print(f"✅ AIorNOT verdict: {verdict} (AI confidence: {ai_confidence:.2%})")
+            
+            return {
+                "provider": "AIorNOT (Backup)",
+                "ai_confidence": ai_confidence,
+                "verdict": verdict,
+                "raw_response": data
+            }
+            
+    except Exception as e:
+        print(f"⚠️ AIorNOT error: {str(e)}")
+        traceback.print_exc()
+        return None
+
+
+# ============================================================
+# UPDATED: IMAGE/VIDEO DETECTION WITH SIGHTENGINE PRIMARY
+# ============================================================
+
+def detect_image_video(url):
+    """
+    Detect AI in images/videos from URL
+    NEW: SightEngine as primary, AIorNOT as backup
+    """
+    
+    print(f"🔍 Starting image/video AI detection for URL: {url}")
+    
+    # Download image data for backup methods
+    try:
+        print(f"📥 Downloading image...")
+        with httpx.Client(timeout=30.0) as client:
+            response = client.get(url)
+            if response.status_code != 200:
+                print(f"❌ Failed to download: {response.status_code}")
+                return create_mock_result(50, "Failed to download content")
+            image_data = response.content
+            print(f"✅ Downloaded {len(image_data)} bytes")
+    except Exception as e:
+        print(f"❌ Download error: {str(e)}")
+        return create_mock_result(50, f"Download error: {str(e)}")
+    
+    # Try SightEngine first (PRIMARY)
+    sightengine_result = detect_with_sightengine_url(url)
+    
+    # Try AIorNOT as backup
+    aiornot_result = detect_with_aiornot(url, is_file=False)
+    
+    # If both primary methods fail, try Hugging Face
+    hf_result = None
+    if sightengine_result is None and aiornot_result is None:
+        print(f"⚠️ Both primary detectors failed, trying Hugging Face backup...")
+        hf_result = detect_with_huggingface(image_data)
+    
+    # Collect all successful results
+    results = []
+    if sightengine_result:
+        results.append(sightengine_result)
+    if aiornot_result:
+        results.append(aiornot_result)
+    if hf_result:
+        results.append(hf_result)
+    
+    # If all failed
+    if not results:
+        print(f"❌ All detectors failed")
+        return create_mock_result(50, "All AI detectors unavailable")
+    
+    # Calculate ensemble score
+    total_confidence = sum(r["ai_confidence"] for r in results)
+    avg_confidence = total_confidence / len(results)
+    
+    # Amplify for more decisive results
+    amplified_confidence = amplify_confidence(avg_confidence)
+    
+    # Convert to trust score (inverse of AI confidence)
+    trust_score = int((1 - amplified_confidence) * 100)
+    label_info = get_label_with_explanation(trust_score)
+    
+    print(f"📊 Ensemble results from {len(results)} detector(s)")
+    print(f"📊 Average AI confidence: {int(avg_confidence * 100)}%")
+    print(f"📊 Amplified confidence: {int(amplified_confidence * 100)}%")
+    print(f"📊 Final trust score: {trust_score} ({label_info['label']})")
+    
+    # Build evidence
+    evidence = [
+        {
+            "category": "Combined Analysis",
+            "signal": f"Ensemble score from {len(results)} detector(s): {int(amplified_confidence * 100)}% AI confidence",
+            "confidence": float(amplified_confidence),
+            "details": {
+                "num_detectors": len(results),
+                "combined_confidence": float(amplified_confidence)
+            }
+        }
+    ]
+    
+    for result in results:
+        evidence.append({
+            "category": f"AI Detection - {result['provider']}",
+            "signal": f"{result['provider']}: {result['verdict']} ({int(result['ai_confidence'] * 100)}% AI confidence)",
+            "confidence": float(result['ai_confidence']),
+            "details": result
+        })
+    
+    return {
+        "trust_score": {
+            "score": trust_score,
+            "label": label_info["label"],
+            "explanation": label_info["explanation"],
+            "confidence": label_info["confidence"],
+            "recommended_action": label_info["action"],
+            "confidence_band": [max(0, trust_score - 10), min(100, trust_score + 10)]
+        },
+        "evidence": evidence,
+        "metadata": {
+            "provider": "Ensemble Detection",
+            "content_type": "image",
+            "num_detectors": len(results),
+            "detectors": [r["provider"] for r in results]
+        }
+    }
+
+
+def detect_image_video_from_data(image_data, filename, is_video=False):
+    """
+    Detect AI in images/videos from uploaded file data
+    NEW: SightEngine as primary, AIorNOT as backup
+    """
+    
+    content_type = "video" if is_video else "image"
+    print(f"🔍 Starting {content_type} AI detection for uploaded file: {filename}")
+    print(f"📦 File size: {len(image_data)} bytes")
+    
+    # Try SightEngine first (PRIMARY)
+    sightengine_result = detect_with_sightengine_file(image_data, filename)
+    
+    # Try AIorNOT as backup
+    aiornot_result = detect_with_aiornot(image_data, is_file=True, is_video=is_video)
+    
+    # If both primary methods fail, try Hugging Face (images only)
+    hf_result = None
+    if sightengine_result is None and aiornot_result is None and not is_video:
+        print(f"⚠️ Both primary detectors failed, trying Hugging Face backup...")
+        hf_result = detect_with_huggingface(image_data)
+    
+    # Collect all successful results
+    results = []
+    if sightengine_result:
+        results.append(sightengine_result)
+    if aiornot_result:
+        results.append(aiornot_result)
+    if hf_result:
+        results.append(hf_result)
+    
+    # If all failed
+    if not results:
+        print(f"❌ All detectors failed")
+        return create_mock_result(50, "All AI detectors unavailable")
+    
+    # Calculate ensemble score
+    total_confidence = sum(r["ai_confidence"] for r in results)
+    avg_confidence = total_confidence / len(results)
+    
+    # Amplify for more decisive results
+    amplified_confidence = amplify_confidence(avg_confidence)
+    
+    # Convert to trust score (inverse of AI confidence)
+    trust_score = int((1 - amplified_confidence) * 100)
+    label_info = get_label_with_explanation(trust_score)
+    
+    print(f"📊 Ensemble results from {len(results)} detector(s)")
+    print(f"📊 Average AI confidence: {int(avg_confidence * 100)}%")
+    print(f"📊 Amplified confidence: {int(amplified_confidence * 100)}%")
+    print(f"📊 Final trust score: {trust_score} ({label_info['label']})")
+    
+    # Build evidence
+    evidence = [
+        {
+            "category": "Combined Analysis",
+            "signal": f"Ensemble score from {len(results)} detector(s): {int(amplified_confidence * 100)}% AI confidence",
+            "confidence": float(amplified_confidence),
+            "details": {
+                "num_detectors": len(results),
+                "combined_confidence": float(amplified_confidence)
+            }
+        }
+    ]
+    
+    for result in results:
+        evidence.append({
+            "category": f"AI Detection - {result['provider']}",
+            "signal": f"{result['provider']}: {result['verdict']} ({int(result['ai_confidence'] * 100)}% AI confidence)",
+            "confidence": float(result['ai_confidence']),
+            "details": result
+        })
+    
+    import uuid
+    return {
+        "trust_score": {
+            "score": trust_score,
+            "label": label_info["label"],
+            "explanation": label_info["explanation"],
+            "confidence": label_info["confidence"],
+            "recommended_action": label_info["action"],
+            "confidence_band": [max(0, trust_score - 10), min(100, trust_score + 10)]
+        },
+        "evidence": evidence,
+        "metadata": {
+            "filename": filename,
+            "provider": "Ensemble Detection",
+            "content_type": content_type,
+            "report_id": str(uuid.uuid4())
+        }
+    }
+
+
+# ============================================================
+# TEXT DETECTION (UNCHANGED)
+# ============================================================
+
+def detect_text_winston(text_content):
+    """Detect AI-generated text using Winston AI (Primary method)"""
+    
+    if not WINSTON_API_KEY:
+        print("⚠️ No Winston AI key configured")
+        return None
+    
+    try:
+        print(f"🔍 Calling Winston AI...")
+        print(f"📝 Text length: {len(text_content)} characters")
+        
+        # Truncate if needed (Winston has limits)
+        MAX_CHARS = 10000
+        text_to_check = text_content[:MAX_CHARS] if len(text_content) > MAX_CHARS else text_content
+        
+        with httpx.Client(timeout=30.0) as client:
+            response = client.post(
+                "https://api.gowinston.ai/v2/plagiarism",
+                headers={
+                    "Authorization": f"Bearer {WINSTON_API_KEY}",
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "text": text_to_check,
+                    "language": "en",
+                    "version": "3.0"
+                }
+            )
+            
+            print(f"🔍 Winston response status: {response.status_code}")
+            
+            if response.status_code != 200:
+                print(f"⚠️ Winston API error: {response.text}")
+                return None
+            
+            data = response.json()
+            print(f"🔍 Winston response: {data}")
+            
+            # Winston returns a score from 0-100 where higher = more human
+            # We need AI confidence (0-1) where higher = more AI
+            if "score" in data:
+                human_score = data["score"]  # 0-100, higher = more human
+                ai_confidence = (100 - human_score) / 100  # Convert to 0-1, where 1 = definitely AI
                 
-                # Try to parse as JSON first (new format)
-                try:
-                    import json
-                    winston_data = json.loads(text_result)
-                    
-                    # Winston returns JSON with score field
-                    # score: 0-100 where 0 = 0% human (100% AI), 100 = 100% human (0% AI)
-                    overall_score = winston_data.get("score")
-                    
-                    if overall_score is not None:
-                        print(f"📊 Winston human score: {overall_score}% (0=AI, 100=human)")
-                        
-                        # Convert to AI confidence
-                        ai_confidence = 1 - (overall_score / 100)
-                        
-                        print(f"✅ Winston AI confidence: {ai_confidence:.2%}")
-                        
-                        # Get credits info
-                        credits_used = winston_data.get("credits_used")
-                        credits_remaining = winston_data.get("credits_remaining")
-                        
-                        if credits_remaining:
-                            print(f"💳 Credits remaining: {credits_remaining}")
-                        
-                        return {
-                            "provider": "Winston AI",
-                            "ai_confidence": ai_confidence,
-                            "verdict": "Human-written" if ai_confidence < 0.5 else "AI-generated",
-                            "raw_response": data,
-                            "winston_human_score": overall_score,
-                            "credits_used": credits_used,
-                            "credits_remaining": credits_remaining
-                        }
-                    else:
-                        print(f"⚠️ No score field in Winston JSON")
-                        return None
-                        
-                except json.JSONDecodeError:
-                    # Fall back to regex parsing for plain text format
-                    print(f"📝 Winston returned plain text, using regex parsing")
-                    
-                    import re
-                    human_match = re.search(r'(\d+\.?\d*)%\s*human', text_result, re.IGNORECASE)
-                    
-                    if human_match:
-                        human_score = float(human_match.group(1))
-                        print(f"📊 Winston human score: {human_score}% (0=AI, 100=human)")
-                        
-                        ai_confidence = 1 - (human_score / 100)
-                        print(f"✅ Winston AI confidence: {ai_confidence:.2%}")
-                        
-                        return {
-                            "provider": "Winston AI",
-                            "ai_confidence": ai_confidence,
-                            "verdict": "Human-written" if ai_confidence < 0.5 else "AI-generated",
-                            "raw_response": data,
-                            "winston_human_score": human_score
-                        }
-                    else:
-                        print(f"⚠️ Could not extract human percentage from Winston response")
-                        return None
+                print(f"✅ Winston: {human_score}% human = {int(ai_confidence * 100)}% AI confidence")
+                
+                return {
+                    "provider": "Winston AI",
+                    "ai_confidence": ai_confidence,
+                    "verdict": "AI-generated" if ai_confidence > 0.5 else "Human-written",
+                    "raw_response": data,
+                    "details": {
+                        "winston_human_score": human_score
+                    }
+                }
             else:
-                print(f"⚠️ Unexpected Winston response format")
+                print(f"⚠️ Could not extract score from Winston response")
                 return None
             
     except Exception as e:
         print(f"⚠️ Winston AI error: {str(e)}")
-        print(f"Traceback: {traceback.format_exc()}")
+        traceback.print_exc()
         return None
 
 
 def detect_text_huggingface(text_content):
-    """
-    Detect AI-generated text using OpenAI's RoBERTa Large detector
-    BACKUP method if Winston AI fails
-    """
+    """Detect AI-generated text using OpenAI's RoBERTa Large detector - BACKUP"""
     
     if not HUGGINGFACE_API_KEY:
         print("⚠️ No Hugging Face API key")
@@ -932,9 +775,7 @@ def detect_text_huggingface(text_content):
 
 
 def detect_text(text_content):
-    """
-    Detect AI in text using Winston AI (primary) with Hugging Face backup
-    """
+    """Detect AI in text using Winston AI (primary) with Hugging Face backup"""
     
     print(f"🔍 Starting text AI detection (length: {len(text_content)} chars)")
     
@@ -990,20 +831,9 @@ def detect_text(text_content):
 # ============================================================
 
 def amplify_confidence(confidence):
-    """
-    Amplify confidence scores to make them more decisive
-    Pushes values away from 0.5 (inconclusive) toward extremes
-    
-    Examples:
-    0.54 -> 0.62 (more decisive toward "not AI")
-    0.63 -> 0.76 (even more decisive)
-    0.90 -> 0.97 (very confident stays very confident)
-    """
-    # Center around 0.5
+    """Amplify confidence scores to make them more decisive"""
     centered = confidence - 0.5
-    # Apply power function to amplify (1.5 is good balance)
     amplified = centered * (abs(centered) ** 0.3) * 2.5
-    # Shift back and clamp to [0, 1]
     result = 0.5 + amplified
     return max(0.0, min(1.0, result))
 
