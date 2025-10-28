@@ -76,7 +76,7 @@ async def verify_url(request: VerifyURLRequest):
     
     # Queue the job
     task = celery_app.send_task(
-        'credisource.verify_content',
+        'verify_content',  # SIMPLIFIED: Just the task name, no prefix needed
         args=[job_id, request.url, request.content_type],
         task_id=job_id
     )
@@ -142,7 +142,7 @@ async def verify_text(request: VerifyTextRequest):
     
     # Queue the job
     task = celery_app.send_task(
-        'credisource.verify_content',
+        'verify_content',  # SIMPLIFIED: Just the task name
         args=[job_id, request.text, 'text'],
         task_id=job_id
     )
@@ -153,7 +153,7 @@ async def verify_text(request: VerifyTextRequest):
         "message": f"Text verification queued. Check status at /job/{job_id}"
     }
 
-# File Upload Endpoint - COMPLETELY REWRITTEN TO AVOID ENCODING ERRORS
+# File Upload Endpoint
 @app.post("/verify/file")
 async def verify_file(request: Request):
     """
@@ -201,7 +201,7 @@ async def verify_file(request: Request):
                 
                 # Queue text verification
                 task = celery_app.send_task(
-                    'credisource.verify_content',
+                    'verify_content',  # SIMPLIFIED: Just the task name
                     args=[job_id, text_content, "text"],
                     task_id=job_id
                 )
@@ -225,7 +225,7 @@ async def verify_file(request: Request):
         
         # Queue the job
         task = celery_app.send_task(
-            'credisource.verify_content_file',
+            'verify_content_file',  # Different task for file uploads
             args=[job_id, file_base64, file.filename, content_type],
             task_id=job_id
         )
@@ -300,7 +300,7 @@ async def get_job_status(job_id: str):
 async def test_worker():
     """Test if Celery worker is connected"""
     try:
-        task = celery_app.send_task('credisource.test_task')
+        task = celery_app.send_task('test_task')
         result = task.get(timeout=5)
         return {"status": "success", "worker_response": result}
     except Exception as e:
