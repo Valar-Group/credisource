@@ -36,6 +36,86 @@ app = Celery('credisource', broker=REDIS_URL, backend=REDIS_URL)
 redis_client = redis.from_url(REDIS_URL)
 
 # ============================================================================
+# TASK ROUTING - ADD THIS RIGHT AFTER "redis_client = redis.from_url(REDIS_URL)"
+# This routes API calls to the correct verification function
+# ============================================================================
+
+@app.task(name='verify_content', bind=True)
+def verify_content(self, job_id: str, url_or_text: str, content_type: str) -> Dict:
+    """
+    Universal content verification task - routes to appropriate handler
+    This is what main.py calls from the API
+    
+    BEGINNER NOTE: This is like a "traffic cop" that receives all requests
+    and sends them to the right verification function based on content_type
+    """
+    print(f"\n{'='*80}")
+    print(f"📥 RECEIVED VERIFICATION REQUEST")
+    print(f"{'='*80}")
+    print(f"Job ID: {job_id}")
+    print(f"Content Type: {content_type}")
+    print(f"URL/Text: {url_or_text[:100]}...")
+    print(f"{'='*80}\n")
+    
+    try:
+        if content_type == "news":
+            return verify_news(url_or_text)
+        elif content_type == "image":
+            return verify_image_task(url_or_text)
+        elif content_type == "video":
+            return verify_video_task(url_or_text)
+        elif content_type == "text":
+            return verify_text_task(url_or_text)
+        else:
+            return {
+                "trust_score": 0,
+                "label": "Error",
+                "verdict": f"Unknown content type: {content_type}",
+                "error": f"Supported types: news, image, video, text"
+            }
+    except Exception as e:
+        print(f"❌ Verification failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return {
+            "trust_score": 0,
+            "label": "Error",
+            "verdict": f"Verification failed: {str(e)}",
+            "error": str(e)
+        }
+
+
+@app.task(name='verify_content_file', bind=True)
+def verify_content_file(self, job_id: str, file_base64: str, filename: str, content_type: str) -> Dict:
+    """
+    Handle file uploads (images/videos encoded as base64)
+    
+    BEGINNER NOTE: When users upload files, they're converted to base64 text
+    This function decodes them back to files and verifies them
+    """
+    print(f"\n{'='*80}")
+    print(f"📤 RECEIVED FILE UPLOAD")
+    print(f"{'='*80}")
+    print(f"Job ID: {job_id}")
+    print(f"Filename: {filename}")
+    print(f"Content Type: {content_type}")
+    print(f"File Size: {len(file_base64)} bytes (base64)")
+    print(f"{'='*80}\n")
+    
+    # TODO: Implement file decoding and verification
+    # For now, return placeholder
+    return {
+        "trust_score": 50,
+        "label": "Not Implemented",
+        "verdict": "File verification coming in Phase 3",
+        "explanation": f"Received {filename} ({content_type}), but file processing not yet implemented"
+    }
+
+
+# Continue with the rest of your celery_worker.py file...
+# (All your Phase 2 functions, source database, etc.)
+
+# ============================================================================
 # PHASE 2 SAFEGUARDS - NEW FUNCTIONS
 # ============================================================================
 
