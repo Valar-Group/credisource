@@ -336,6 +336,43 @@ SOURCE_CREDIBILITY = {
         "type": "aggregator"
     },
     
+    # SATIRE SITES (Intentionally fake for humor)
+    "theonion.com": {
+        "score": 0,
+        "tier": "satire",
+        "bias": "center",
+        "type": "satire",
+        "description": "Known satire website - content is intentionally fake for humor"
+    },
+    "babylonbee.com": {
+        "score": 0,
+        "tier": "satire",
+        "bias": "right",
+        "type": "satire",
+        "description": "Conservative satire website - content is intentionally fake for humor"
+    },
+    "thebeaverton.com": {
+        "score": 0,
+        "tier": "satire",
+        "bias": "center-left",
+        "type": "satire",
+        "description": "Canadian satire website - content is intentionally fake for humor"
+    },
+    "newsthump.com": {
+        "score": 0,
+        "tier": "satire",
+        "bias": "center-left",
+        "type": "satire",
+        "description": "UK satire website - content is intentionally fake for humor"
+    },
+    "clickhole.com": {
+        "score": 0,
+        "tier": "satire",
+        "bias": "center",
+        "type": "satire",
+        "description": "Satirical clickbait parody website"
+    },
+    
     # AGGREGATORS (Special handling)
     "news.yahoo.com": {
         "score": 65,
@@ -940,6 +977,52 @@ def verify_news_article(self, job_id: str, url: str, content_type: str) -> Dict:
                 "score": 0,
                 "label": "Unsupported",
                 "explanation": "Only 'news' content type is currently supported"
+            }
+        }
+    
+    # Check if it's a known satire site FIRST
+    domain = extract_domain(url)
+    if domain in SOURCE_CREDIBILITY and SOURCE_CREDIBILITY[domain]["tier"] == "satire":
+        site_name = domain.replace('.com', '').title()
+        print(f"🎭 SATIRE SITE DETECTED: {site_name}")
+        return {
+            "trust_score": {
+                "score": 0,
+                "label": "Satire - Not Real News",
+                "explanation": f"This article is from {site_name}, a known satire website. The content is intentionally fake for humor and entertainment purposes.",
+                "confidence": "High",
+                "recommended_action": "This is satire/parody - not meant to be believed as factual news",
+                "methodology": "Known satire site detection",
+                "scoring_factors": [
+                    {
+                        "factor": "Source Type",
+                        "score": 0,
+                        "weight": "100%",
+                        "reasoning": f"{site_name} is a known satire website - content is intentionally fake"
+                    }
+                ]
+            },
+            "source_credibility": {
+                "domain": domain,
+                "tier": "satire",
+                "bias": SOURCE_CREDIBILITY[domain]["bias"],
+                "type": "satire",
+                "verdict": f"a known satire website ({site_name})"
+            },
+            "content_analysis": {
+                "red_flags": ["satire_site"],
+                "details": ["This is from a known satire website"]
+            },
+            "cross_reference": {
+                "sources_found": 0,
+                "sources": [],
+                "story_type": "satire"
+            },
+            "article": {
+                "title": url.split('/')[-2].replace('-', ' ').title() if '/' in url else "Satire Article",
+                "author": "Satire",
+                "domain": domain,
+                "word_count": 0
             }
         }
     
