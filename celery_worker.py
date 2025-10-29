@@ -1530,8 +1530,6 @@ def verify_content_file(self, job_id: str, file_base64: str, filename: str, cont
 
 
 def verify_image_file(image_data: bytes, filename: str) -> Dict:
-
-def verify_image_file(image_data: bytes, filename: str) -> Dict:
     """Image detection from uploaded file data"""
     print(f"📸 Processing uploaded image: {filename}")
     
