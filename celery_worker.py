@@ -1481,7 +1481,102 @@ def detect_with_sightengine_file(image_data: bytes, filename: str) -> Optional[D
     except Exception as e:
         print(f"⚠️ SightEngine file error: {str(e)}")
         return None
+@app.task(name='credisource.verify_content_file', bind=True)
+def verify_content_file(self, job_id: str, file_base64: str, filename: str, content_type: str) -> Dict:
+    ... [all the code you just showed]
+    }
 
+# ↓↓↓ ADD THESE TWO FUNCTIONS HERE ↓↓↓
+
+def verify_image_file(image_data: bytes, filename: str) -> Dict:
+    """Image detection from uploaded file data"""
+    print(f"📸 Processing uploaded image: {filename}")
+    
+    try:
+        results = []
+        
+        # 1. SightEngine (file upload)
+        sightengine_result = detect_with_sightengine_file(image_data, filename)
+        if sightengine_result:
+            results.append(sightengine_result)
+        
+        # 2. AIorNOT (file upload)
+        aiornot_result = detect_with_aiornot(image_data, is_file=True, is_video=False)
+        if aiornot_result:
+            results.append(aiornot_result)
+        
+        # 3. Hugging Face (fallback)
+        if not results:
+            hf_result = detect_with_huggingface_image(image_data)
+            if hf_result:
+                results.append(hf_result)
+        
+        if not results:
+            return {
+                "trust_score": 50,
+                "label": "Unavailable",
+                "verdict": "AI detection services unavailable"
+            }
+        
+        # Calculate score
+        avg_confidence = sum(r["ai_confidence"] for r in results) / len(results)
+        amplified_confidence = amplify_confidence(avg_confidence)
+        trust_score = int((1 - amplified_confidence) * 100)
+        
+        label_info = get_detection_label(trust_score)
+        
+        return {
+            "trust_score": trust_score,
+            "label": label_info["label"],
+            "verdict": label_info["explanation"],
+            "confidence": label_info["confidence"],
+            "detectors_used": len(results),
+            "providers": [r["provider"] for r in results]
+        }
+        
+    except Exception as e:
+        print(f"❌ Image file verification error: {str(e)}")
+        return {
+            "trust_score": 50,
+            "label": "Error",
+            "verdict": f"Verification failed: {str(e)}"
+        }
+
+
+def verify_video_file(video_data: bytes, filename: str) -> Dict:
+    """Video detection from uploaded file data"""
+    print(f"🎥 Processing uploaded video: {filename}")
+    
+    try:
+        # AIorNOT supports video file uploads
+        aiornot_result = detect_with_aiornot(video_data, is_file=True, is_video=True)
+        
+        if not aiornot_result:
+            return {
+                "trust_score": 50,
+                "label": "Unavailable",
+                "verdict": "Video AI detection unavailable (AIorNOT required)"
+            }
+        
+        ai_confidence = aiornot_result["ai_confidence"]
+        trust_score = int((1 - ai_confidence) * 100)
+        label_info = get_detection_label(trust_score)
+        
+        return {
+            "trust_score": trust_score,
+            "label": label_info["label"],
+            "verdict": label_info["explanation"],
+            "confidence": label_info["confidence"],
+            "provider": aiornot_result["provider"]
+        }
+        
+    except Exception as e:
+        print(f"❌ Video file verification error: {str(e)}")
+        return {
+            "trust_score": 50,
+            "label": "Error",
+            "verdict": f"Verification failed: {str(e)}"
+        }
 
 # ============================================================================
 # AIORNOT DETECTION (Backup for Images/Videos)
