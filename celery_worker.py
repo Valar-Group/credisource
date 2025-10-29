@@ -1257,18 +1257,21 @@ def verify_news(url: str) -> Dict:
                     "verdict": source_cred["verdict"],
                     "phase2_checks": source_cred.get("red_flags", [])
                 },
+                
                 "content": {
-                    "score": content_analysis["quality_score"],
-                    "red_flags": content_analysis["red_flags"],
-                    "verdict": content_analysis["verdict"]
-                },
+    "score": content_analysis["quality_score"],
+    "red_flags": content_analysis["red_flags"],
+    "verdict": content_analysis["verdict"],
+    "contradiction_warning": content_analysis.get("contradiction_warning")
+},
                 "cross_reference": {
-                    "sources_found": cross_ref["sources_found"],
-                    "score": cross_ref["cross_ref_score"],
-                    "story_type": story_type,
-                    "corroborating_sources": cross_ref.get("corroborating_sources", [])[:3],  # Top 3
-                    "verdict": cross_ref["verdict"]
-                }
+    "sources_found": cross_ref["sources_found"],
+    "score": cross_ref["cross_ref_score"],
+    "story_type": story_type,
+    "corroborating_sources": cross_ref.get("corroborating_sources", [])[:3],
+    "verdict": cross_ref["verdict"],
+    "contradiction_warning": cross_ref.get("contradiction_warning")
+}
             }
         }
         
