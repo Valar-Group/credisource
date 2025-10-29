@@ -24,6 +24,21 @@ import socket
 from celery import Celery
 import redis
 
+import httpx
+import traceback
+import base64
+
+# API Keys
+SIGHTENGINE_API_USER = os.getenv("SIGHTENGINE_API_USER", "")
+SIGHTENGINE_API_SECRET = os.getenv("SIGHTENGINE_API_SECRET", "")
+AIORNOT_API_KEY = os.getenv("AIORNOT_API_KEY", "")
+WINSTON_API_KEY = os.getenv("WINSTON_API_KEY", "")
+HUGGINGFACE_API_KEY = os.getenv("HUGGINGFACE_API_KEY", "")
+
+# ↓ THEN YOUR EXISTING CODE CONTINUES
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+NEWS_API_KEY = os.getenv("NEWS_API_KEY", "")
+
 # ============================================================================
 # CONFIGURATION
 # ============================================================================
@@ -1297,50 +1312,557 @@ def verify_news(url: str) -> Dict:
 # CELERY TASKS
 # ============================================================================
 
+# ============================================================================
+# IMAGE/VIDEO/TEXT DETECTION - COMPLETE WORKING CODE
+# Paste this to replace the 3 stub functions you just deleted
+# ============================================================================
+
+import httpx
+import traceback
+import base64
+from typing import Dict, Optional
+
+# API Keys (already defined at top of your file, but listed here for reference)
+# AIORNOT_API_KEY = os.getenv("AIORNOT_API_KEY")
+# WINSTON_API_KEY = os.getenv("WINSTON_API_KEY")
+# HUGGINGFACE_API_KEY = os.getenv("HUGGINGFACE_API_KEY")
+# SIGHTENGINE_API_USER = os.getenv("SIGHTENGINE_API_USER")
+# SIGHTENGINE_API_SECRET = os.getenv("SIGHTENGINE_API_SECRET")
+
+# Add these at the top of celery_worker.py with your other imports
+SIGHTENGINE_API_USER = os.getenv("SIGHTENGINE_API_USER", "")
+SIGHTENGINE_API_SECRET = os.getenv("SIGHTENGINE_API_SECRET", "")
+AIORNOT_API_KEY = os.getenv("AIORNOT_API_KEY", "")
+WINSTON_API_KEY = os.getenv("WINSTON_API_KEY", "")
+HUGGINGFACE_API_KEY = os.getenv("HUGGINGFACE_API_KEY", "")
+
+
+# ============================================================================
+# HELPER FUNCTIONS FOR IMAGE/VIDEO/TEXT
+# ============================================================================
+
+def amplify_confidence(confidence: float) -> float:
+    """Amplify confidence scores to make them more decisive"""
+    centered = confidence - 0.5
+    amplified = centered * (abs(centered) ** 0.3) * 2.5
+    result = 0.5 + amplified
+    return max(0.0, min(1.0, result))
+
+
+def get_detection_label(score: int) -> Dict:
+    """Convert detection score to label with explanation"""
+    if score >= 70:
+        return {
+            "label": "Likely Real",
+            "explanation": "This content appears authentic based on AI detection analysis.",
+            "confidence": "High"
+        }
+    elif score >= 50:
+        return {
+            "label": "Uncertain",
+            "explanation": "Mixed signals detected. Manual verification recommended.",
+            "confidence": "Medium"
+        }
+    elif score >= 30:
+        return {
+            "label": "Probably Fake",
+            "explanation": "Signs of AI generation detected.",
+            "confidence": "Medium-High"
+        }
+    else:
+        return {
+            "label": "Likely Fake",
+            "explanation": "Strong indicators of AI generation detected.",
+            "confidence": "High"
+        }
+
+
+# ============================================================================
+# SIGHTENGINE DETECTION (Primary for Images)
+# ============================================================================
+
+def detect_with_sightengine_url(image_url: str) -> Optional[Dict]:
+    """SightEngine AI detection via URL"""
+    if not SIGHTENGINE_API_USER or not SIGHTENGINE_API_SECRET:
+        print("⚠️ SightEngine credentials not configured")
+        return None
+    
+    try:
+        print(f"👁️ Calling SightEngine...")
+        
+        with httpx.Client(timeout=30.0) as client:
+            response = client.get(
+                "https://api.sightengine.com/1.0/check.json",
+                params={
+                    'models': 'genai',
+                    'api_user': SIGHTENGINE_API_USER,
+                    'api_secret': SIGHTENGINE_API_SECRET,
+                    'url': image_url
+                }
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                ai_prob = data.get('type', {}).get('ai_generated', 0.5)
+                
+                print(f"✅ SightEngine: {int((1-ai_prob)*100)}% human")
+                
+                return {
+                    "provider": "SightEngine",
+                    "ai_confidence": ai_prob,
+                    "verdict": "AI-generated" if ai_prob > 0.5 else "Real"
+                }
+            else:
+                print(f"⚠️ SightEngine error: {response.status_code}")
+                return None
+                
+    except Exception as e:
+        print(f"⚠️ SightEngine error: {str(e)}")
+        return None
+
+
+def detect_with_sightengine_file(image_data: bytes, filename: str) -> Optional[Dict]:
+    """SightEngine AI detection via file upload"""
+    if not SIGHTENGINE_API_USER or not SIGHTENGINE_API_SECRET:
+        return None
+    
+    try:
+        print(f"👁️ Calling SightEngine (file)...")
+        
+        import io
+        file_obj = io.BytesIO(image_data)
+        
+        with httpx.Client(timeout=30.0) as client:
+            response = client.post(
+                "https://api.sightengine.com/1.0/check.json",
+                data={
+                    'models': 'genai',
+                    'api_user': SIGHTENGINE_API_USER,
+                    'api_secret': SIGHTENGINE_API_SECRET
+                },
+                files={'media': (filename, file_obj, 'image/jpeg')}
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                ai_prob = data.get('type', {}).get('ai_generated', 0.5)
+                
+                print(f"✅ SightEngine: {int((1-ai_prob)*100)}% human")
+                
+                return {
+                    "provider": "SightEngine",
+                    "ai_confidence": ai_prob,
+                    "verdict": "AI-generated" if ai_prob > 0.5 else "Real"
+                }
+            else:
+                return None
+                
+    except Exception as e:
+        print(f"⚠️ SightEngine file error: {str(e)}")
+        return None
+
+
+# ============================================================================
+# AIORNOT DETECTION (Backup for Images/Videos)
+# ============================================================================
+
+def detect_with_aiornot(url_or_data, is_file: bool = False, is_video: bool = False) -> Optional[Dict]:
+    """AIorNOT API detection"""
+    if not AIORNOT_API_KEY:
+        print("⚠️ No AIorNOT API key")
+        return None
+    
+    try:
+        content_type = "video" if is_video else "image"
+        print(f"🔍 Calling AIorNOT ({content_type})...")
+        
+        with httpx.Client(timeout=60.0) as client:
+            if is_file:
+                import io
+                file_obj = io.BytesIO(url_or_data) if isinstance(url_or_data, bytes) else url_or_data
+                
+                response = client.post(
+                    "https://api.aiornot.com/v1/reports/file",
+                    headers={"Authorization": f"Bearer {AIORNOT_API_KEY}"},
+                    files={"object": ("file", file_obj, f"{content_type}/jpeg")}
+                )
+            else:
+                response = client.post(
+                    "https://api.aiornot.com/v1/reports/url",
+                    headers={
+                        "Authorization": f"Bearer {AIORNOT_API_KEY}",
+                        "Content-Type": "application/json"
+                    },
+                    json={"url": url_or_data}
+                )
+            
+            if response.status_code != 200:
+                print(f"⚠️ AIorNOT error: {response.status_code}")
+                return None
+            
+            data = response.json()
+            verdict = data.get("verdict", "unknown")
+            
+            ai_confidence = 0.5
+            if verdict == "ai":
+                ai_confidence = 0.9
+            elif verdict == "human":
+                ai_confidence = 0.1
+            
+            print(f"✅ AIorNOT: {verdict}")
+            
+            return {
+                "provider": "AIorNOT",
+                "ai_confidence": ai_confidence,
+                "verdict": verdict
+            }
+            
+    except Exception as e:
+        print(f"⚠️ AIorNOT error: {str(e)}")
+        return None
+
+
+# ============================================================================
+# HUGGING FACE DETECTION (Backup)
+# ============================================================================
+
+def detect_with_huggingface_image(image_data: bytes) -> Optional[Dict]:
+    """Hugging Face image detection (backup)"""
+    if not HUGGINGFACE_API_KEY:
+        return None
+    
+    try:
+        print(f"🤗 Calling Hugging Face...")
+        
+        image_b64 = base64.b64encode(image_data).decode('utf-8')
+        
+        with httpx.Client(timeout=30.0) as client:
+            response = client.post(
+                "https://api-inference.huggingface.co/models/Organika/sdxl-detector",
+                headers={
+                    "Authorization": f"Bearer {HUGGINGFACE_API_KEY}",
+                    "Content-Type": "application/json"
+                },
+                json={"inputs": image_b64}
+            )
+            
+            if response.status_code == 503:
+                print("⏳ Model loading...")
+                import time
+                time.sleep(10)
+                response = client.post(
+                    "https://api-inference.huggingface.co/models/Organika/sdxl-detector",
+                    headers={"Authorization": f"Bearer {HUGGINGFACE_API_KEY}"},
+                    json={"inputs": image_b64}
+                )
+            
+            if response.status_code != 200:
+                return None
+            
+            data = response.json()
+            ai_confidence = 0.5
+            
+            if isinstance(data, list) and len(data) > 0:
+                results = data[0] if isinstance(data[0], list) else data
+                for result in results:
+                    if result.get("label") in ["artificial", "AI", "LABEL_1"]:
+                        ai_confidence = result.get("score", 0.5)
+                        break
+            
+            print(f"✅ HF AI confidence: {int(ai_confidence*100)}%")
+            
+            return {
+                "provider": "Hugging Face",
+                "ai_confidence": ai_confidence,
+                "verdict": "AI-generated" if ai_confidence > 0.5 else "Real"
+            }
+            
+    except Exception as e:
+        print(f"⚠️ Hugging Face error: {str(e)}")
+        return None
+
+
+# ============================================================================
+# TEXT DETECTION FUNCTIONS
+# ============================================================================
+
+def detect_text_winston(text_content: str) -> Optional[Dict]:
+    """Winston AI text detection (primary)"""
+    if not WINSTON_API_KEY:
+        return None
+    
+    try:
+        print(f"🔍 Calling Winston AI...")
+        
+        # Skip Winston for very long text to conserve credits
+        if len(text_content) > 2000:
+            print(f"⚠️ Text too long ({len(text_content)} chars) - using backup")
+            return None
+        
+        with httpx.Client(timeout=30.0) as client:
+            response = client.post(
+                "https://api.gowinston.ai/v2/plagiarism",
+                headers={
+                    "Authorization": f"Bearer {WINSTON_API_KEY}",
+                    "Content-Type": "application/json"
+                },
+                json={"text": text_content[:10000], "language": "en"}
+            )
+            
+            if response.status_code != 200:
+                print(f"⚠️ Winston error: {response.status_code}")
+                return None
+            
+            data = response.json()
+            
+            if "score" in data:
+                human_score = data["score"]
+                ai_confidence = (100 - human_score) / 100
+                
+                print(f"✅ Winston: {human_score}% human")
+                
+                return {
+                    "provider": "Winston AI",
+                    "ai_confidence": ai_confidence,
+                    "verdict": "AI-generated" if ai_confidence > 0.5 else "Human-written"
+                }
+            
+            return None
+            
+    except Exception as e:
+        print(f"⚠️ Winston error: {str(e)}")
+        return None
+
+
+def detect_text_huggingface(text_content: str) -> Optional[Dict]:
+    """Hugging Face text detection (backup)"""
+    if not HUGGINGFACE_API_KEY:
+        return None
+    
+    try:
+        print(f"🤗 Calling RoBERTa (backup)...")
+        
+        with httpx.Client(timeout=30.0) as client:
+            response = client.post(
+                "https://api-inference.huggingface.co/models/openai-community/roberta-large-openai-detector",
+                headers={
+                    "Authorization": f"Bearer {HUGGINGFACE_API_KEY}",
+                    "Content-Type": "application/json"
+                },
+                json={"inputs": text_content[:2000]}
+            )
+            
+            if response.status_code == 503:
+                import time
+                time.sleep(10)
+                response = client.post(
+                    "https://api-inference.huggingface.co/models/openai-community/roberta-large-openai-detector",
+                    headers={"Authorization": f"Bearer {HUGGINGFACE_API_KEY}"},
+                    json={"inputs": text_content[:2000]}
+                )
+            
+            if response.status_code != 200:
+                return None
+            
+            data = response.json()
+            ai_confidence = 0.5
+            
+            if isinstance(data, list) and len(data) > 0:
+                results = data[0] if isinstance(data[0], list) else data
+                for result in results:
+                    if result.get("label") == "LABEL_1":
+                        ai_confidence = result.get("score", 0.5)
+                        break
+            
+            # Calibrate for false positives on formal text
+            if ai_confidence > 0.85:
+                ai_confidence = 0.5 + (ai_confidence - 0.85) * 0.3
+            
+            print(f"✅ RoBERTa: {int(ai_confidence*100)}% AI")
+            
+            return {
+                "provider": "RoBERTa (Backup)",
+                "ai_confidence": ai_confidence,
+                "verdict": "AI-generated" if ai_confidence > 0.5 else "Human-written"
+            }
+            
+    except Exception as e:
+        print(f"⚠️ RoBERTa error: {str(e)}")
+        return None
+
+
+# ============================================================================
+# MAIN DETECTION TASK FUNCTIONS
+# ============================================================================
+
 @app.task(bind=True)
 def verify_image_task(self, image_url: str) -> Dict:
-    """Process image verification (placeholder for now)"""
-    print(f"📸 Image verification task started: {image_url}")
+    """
+    Complete image AI detection with ensemble approach
+    Uses: SightEngine (primary), AIorNOT (backup), Hugging Face (fallback)
+    """
+    print(f"📸 Image verification started: {image_url}")
     
-    # TODO: Implement actual image verification
-    # For now, return placeholder
-    return {
-        "trust_score": 50,
-        "label": "Not Implemented",
-        "verdict": "Image verification coming soon",
-        "explanation": "This feature is planned for Phase 2"
-    }
+    try:
+        # Download image
+        print(f"📥 Downloading image...")
+        with httpx.Client(timeout=30.0) as client:
+            response = client.get(image_url)
+            if response.status_code != 200:
+                return {
+                    "trust_score": 50,
+                    "label": "Error",
+                    "verdict": f"Failed to download image: {response.status_code}"
+                }
+            image_data = response.content
+        
+        print(f"✅ Downloaded {len(image_data)} bytes")
+        
+        # Try detection methods
+        results = []
+        
+        # 1. SightEngine (primary)
+        sightengine_result = detect_with_sightengine_url(image_url)
+        if sightengine_result:
+            results.append(sightengine_result)
+        
+        # 2. AIorNOT (backup)
+        aiornot_result = detect_with_aiornot(image_url, is_file=False)
+        if aiornot_result:
+            results.append(aiornot_result)
+        
+        # 3. Hugging Face (fallback)
+        if not results:
+            hf_result = detect_with_huggingface_image(image_data)
+            if hf_result:
+                results.append(hf_result)
+        
+        # If all failed
+        if not results:
+            return {
+                "trust_score": 50,
+                "label": "Unavailable",
+                "verdict": "AI detection services unavailable"
+            }
+        
+        # Calculate ensemble score
+        avg_confidence = sum(r["ai_confidence"] for r in results) / len(results)
+        amplified_confidence = amplify_confidence(avg_confidence)
+        trust_score = int((1 - amplified_confidence) * 100)
+        
+        label_info = get_detection_label(trust_score)
+        
+        print(f"📊 Final score: {trust_score}/100 ({label_info['label']})")
+        
+        return {
+            "trust_score": trust_score,
+            "label": label_info["label"],
+            "verdict": label_info["explanation"],
+            "confidence": label_info["confidence"],
+            "detectors_used": len(results),
+            "providers": [r["provider"] for r in results]
+        }
+        
+    except Exception as e:
+        print(f"❌ Image verification error: {str(e)}")
+        traceback.print_exc()
+        return {
+            "trust_score": 50,
+            "label": "Error",
+            "verdict": f"Verification failed: {str(e)}"
+        }
 
 
 @app.task(bind=True)
 def verify_video_task(self, video_url: str) -> Dict:
-    """Process video verification (placeholder for now)"""
-    print(f"🎥 Video verification task started: {video_url}")
+    """
+    Complete video AI detection
+    Uses: AIorNOT (primary - supports video)
+    """
+    print(f"🎥 Video verification started: {video_url}")
     
-    # TODO: Implement actual video verification
-    # For now, return placeholder
-    return {
-        "trust_score": 50,
-        "label": "Not Implemented",
-        "verdict": "Video verification coming soon",
-        "explanation": "This feature is planned for Phase 2"
-    }
+    try:
+        # Try AIorNOT (supports video)
+        aiornot_result = detect_with_aiornot(video_url, is_file=False, is_video=True)
+        
+        if not aiornot_result:
+            return {
+                "trust_score": 50,
+                "label": "Unavailable",
+                "verdict": "Video AI detection unavailable (AIorNOT required)"
+            }
+        
+        ai_confidence = aiornot_result["ai_confidence"]
+        trust_score = int((1 - ai_confidence) * 100)
+        
+        label_info = get_detection_label(trust_score)
+        
+        print(f"📊 Final score: {trust_score}/100 ({label_info['label']})")
+        
+        return {
+            "trust_score": trust_score,
+            "label": label_info["label"],
+            "verdict": label_info["explanation"],
+            "confidence": label_info["confidence"],
+            "provider": aiornot_result["provider"]
+        }
+        
+    except Exception as e:
+        print(f"❌ Video verification error: {str(e)}")
+        traceback.print_exc()
+        return {
+            "trust_score": 50,
+            "label": "Error",
+            "verdict": f"Verification failed: {str(e)}"
+        }
 
 
 @app.task(bind=True)
 def verify_text_task(self, text: str) -> Dict:
-    """Process text verification (placeholder for now)"""
-    print(f"📝 Text verification task started (length: {len(text)})")
+    """
+    Complete text AI detection
+    Uses: Winston AI (primary), RoBERTa (backup)
+    """
+    print(f"📝 Text verification started (length: {len(text)} chars)")
     
-    # TODO: Implement actual text verification
-    # For now, return placeholder
-    return {
-        "trust_score": 50,
-        "label": "Not Implemented",
-        "verdict": "Text verification coming soon",
-        "explanation": "This feature is planned for Phase 2"
-    }
-
+    try:
+        # Try Winston AI first
+        winston_result = detect_text_winston(text)
+        
+        if not winston_result:
+            # Fallback to Hugging Face
+            winston_result = detect_text_huggingface(text)
+        
+        if not winston_result:
+            return {
+                "trust_score": 50,
+                "label": "Unavailable",
+                "verdict": "Text AI detection unavailable"
+            }
+        
+        ai_confidence = winston_result["ai_confidence"]
+        trust_score = int((1 - ai_confidence) * 100)
+        
+        label_info = get_detection_label(trust_score)
+        
+        print(f"📊 Final score: {trust_score}/100 ({label_info['label']})")
+        
+        return {
+            "trust_score": trust_score,
+            "label": label_info["label"],
+            "verdict": label_info["explanation"],
+            "confidence": label_info["confidence"],
+            "provider": winston_result["provider"]
+        }
+        
+    except Exception as e:
+        print(f"❌ Text verification error: {str(e)}")
+        traceback.print_exc()
+        return {
+            "trust_score": 50,
+            "label": "Error",
+            "verdict": f"Verification failed: {str(e)}"
+        }
 
 @app.task(bind=True)
 def verify_news_task(self, url: str) -> Dict:
