@@ -975,7 +975,13 @@ def cross_reference_news(headline: str, article_text: str, source_score: int = N
                 # Get context-aware score
                 score_data = get_cross_reference_score(sources_count, story_type)
                 
+                # Add contradiction warning
+                contradiction_warning = None
+                if source_score is not None and source_score < 20 and sources_count >= 3:
+                    contradiction_warning = "⚠️ WARNING: Other sites may be repeating this story without verification. Strong corroboration doesn't validate content from known fake news sources."
+                
                 return {
+                    "contradiction_warning": contradiction_warning,
                     "sources_found": sources_count,
                     "corroborating_sources": corroborating[:5],  # Top 5
                     "cross_ref_score": score_data["score"],
