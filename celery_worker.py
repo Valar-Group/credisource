@@ -1483,10 +1483,53 @@ def detect_with_sightengine_file(image_data: bytes, filename: str) -> Optional[D
         return None
 @app.task(name='credisource.verify_content_file', bind=True)
 def verify_content_file(self, job_id: str, file_base64: str, filename: str, content_type: str) -> Dict:
-    ... [all the code you just showed]
-    }
+    """
+    Handle file uploads (images/videos encoded as base64)
+    Decodes base64 data and passes to appropriate detector
+    """
+    print(f"\n{'='*80}")
+    print(f"📤 RECEIVED FILE UPLOAD")
+    print(f"{'='*80}")
+    print(f"Job ID: {job_id}")
+    print(f"Filename: {filename}")
+    print(f"Content Type: {content_type}")
+    print(f"File Size: {len(file_base64)} bytes (base64)")
+    print(f"{'='*80}\n")
+    
+    try:
+        # Decode base64 to bytes
+        file_data = base64.b64decode(file_base64)
+        print(f"✅ Decoded {len(file_data)} bytes")
+        
+        # Route to appropriate handler
+        if content_type == "image":
+            return verify_image_file(file_data, filename)
+        elif content_type == "video":
+            return verify_video_file(file_data, filename)
+        elif content_type == "text":
+            # For text files, decode as string
+            text_content = file_data.decode('utf-8')
+            return verify_text_task(text_content)
+        else:
+            return {
+                "trust_score": 0,
+                "label": "Error",
+                "verdict": f"Unsupported file type: {content_type}"
+            }
+    
+    except Exception as e:
+        print(f"❌ File processing error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return {
+            "trust_score": 0,
+            "label": "Error",
+            "verdict": f"File processing failed: {str(e)}",
+            "error": str(e)
+        }
 
-# ↓↓↓ ADD THESE TWO FUNCTIONS HERE ↓↓↓
+
+def verify_image_file(image_data: bytes, filename: str) -> Dict:
 
 def verify_image_file(image_data: bytes, filename: str) -> Dict:
     """Image detection from uploaded file data"""
