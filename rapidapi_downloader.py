@@ -123,9 +123,7 @@ def detect_platform(url: str) -> str:
 def get_rapidapi_endpoint(platform: str, url: str) -> str:
     """
     Get the appropriate RapidAPI endpoint for the platform
-    
-    Note: Check the actual API documentation for correct endpoints
-    These are example endpoints - adjust based on the actual API
+    Based on actual API documentation from RapidAPI playground
     """
     
     base_url = f"https://{RAPID_API_HOST}"
@@ -134,34 +132,76 @@ def get_rapidapi_endpoint(platform: str, url: str) -> str:
     from urllib.parse import quote
     encoded_url = quote(url, safe='')
     
-    # Map platforms to their endpoints
-    # NOTE: These may need adjustment based on actual API docs
+    # Extract video ID for YouTube
+    if platform == "youtube":
+        # Extract video ID from various YouTube URL formats
+        video_id = extract_youtube_id(url)
+        if video_id:
+            return f"{base_url}/youtube/v3/video/details?videoId={video_id}&renderableFormats=720p,highres&urlAccess=proxied&getTranscript=false"
+    
+    # Map platforms to their endpoints (based on actual API)
     endpoints = {
-        "youtube": f"{base_url}/youtube/video?url={encoded_url}",
-        "instagram": f"{base_url}/instagram?url={encoded_url}",
-        "facebook": f"{base_url}/facebook?url={encoded_url}",
-        "tiktok": f"{base_url}/tiktok?url={encoded_url}",
-        "twitter": f"{base_url}/twitter?url={encoded_url}",
-        "linkedin": f"{base_url}/linkedin?url={encoded_url}",
-        "pinterest": f"{base_url}/pinterest?url={encoded_url}",
+        "instagram": f"{base_url}/instagram/v3/media/details?url={encoded_url}",
+        "facebook": f"{base_url}/facebook/v3/post/details?url={encoded_url}&renderableFormats=720p,highres",
+        "tiktok": f"{base_url}/tiktok/v3/post/details?url={encoded_url}",
+        "twitter": f"{base_url}/twitter/v3/post/details?url={encoded_url}",
     }
     
-    return endpoints.get(platform, f"{base_url}/download?url={encoded_url}")
+    return endpoints.get(platform, f"{base_url}/smvd/get/all?url={encoded_url}")
+
+
+def extract_youtube_id(url: str) -> Optional[str]:
+    """
+    Extract YouTube video ID from various URL formats
+    
+    Supports:
+    - https://www.youtube.com/watch?v=VIDEO_ID
+    - https://youtu.be/VIDEO_ID
+    - https://www.youtube.com/shorts/VIDEO_ID
+    """
+    import re
+    
+    patterns = [
+        r'(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/shorts\/)([a-zA-Z0-9_-]{11})',
+        r'youtube\.com\/embed\/([a-zA-Z0-9_-]{11})',
+        r'youtube\.com\/v\/([a-zA-Z0-9_-]{11})'
+    ]
+    
+    for pattern in patterns:
+        match = re.search(pattern, url)
+        if match:
+            return match.group(1)
+    
+    return None
 
 
 def extract_download_url(data: Dict, platform: str) -> Optional[str]:
     """
     Extract the actual video download URL from API response
     
-    Note: Response format varies by API - adjust as needed
-    Common patterns:
-    - data['url']
-    - data['download_url']
-    - data['video_url']
-    - data['media'][0]['url']
+    The v3 API returns data in this structure:
+    {
+        "data": {
+            "formats": [
+                {"url": "...", "quality": "720p", ...}
+            ]
+        }
+    }
     """
     
-    # Try common response patterns
+    print(f"   📋 Parsing API response for {platform}...")
+    
+    # v3 API format - look for formats array
+    if 'data' in data and 'formats' in data['data']:
+        formats = data['data']['formats']
+        if isinstance(formats, list) and len(formats) > 0:
+            # Get the first available format
+            first_format = formats[0]
+            if 'url' in first_format:
+                print(f"   ✅ Found download URL in formats array")
+                return first_format['url']
+    
+    # Fallback: Try common response patterns
     possible_keys = [
         'url',
         'download_url',
@@ -170,27 +210,43 @@ def extract_download_url(data: Dict, platform: str) -> Optional[str]:
         'videoUrl',
         'link',
         'file',
-        'media_url'
+        'media_url',
+        'downloadLink'
     ]
     
+    # Check top level
     for key in possible_keys:
         if key in data:
+            print(f"   ✅ Found download URL at top level: {key}")
             return data[key]
     
-    # Try nested structures
+    # Check nested in 'data'
     if 'data' in data:
         for key in possible_keys:
             if key in data['data']:
+                print(f"   ✅ Found download URL in data.{key}")
                 return data['data'][key]
     
+    # Check media array
     if 'media' in data and isinstance(data['media'], list) and len(data['media']) > 0:
-        return data['media'][0].get('url')
+        media_url = data['media'][0].get('url')
+        if media_url:
+            print(f"   ✅ Found download URL in media array")
+            return media_url
     
+    # Check videos array  
     if 'videos' in data and isinstance(data['videos'], list) and len(data['videos']) > 0:
-        return data['videos'][0].get('url')
+        video_url = data['videos'][0].get('url')
+        if video_url:
+            print(f"   ✅ Found download URL in videos array")
+            return video_url
     
-    # If we can't find it, return None
-    print(f"   ⚠️ Could not find download URL in response keys: {list(data.keys())}")
+    # If we can't find it, log the response structure
+    print(f"   ⚠️ Could not find download URL in response")
+    print(f"   Response keys: {list(data.keys())}")
+    if 'data' in data:
+        print(f"   data keys: {list(data['data'].keys())}")
+    
     return None
 
 
