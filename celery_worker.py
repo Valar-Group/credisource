@@ -117,7 +117,7 @@ def verify_content(self, job_id: str, url_or_text: str, content_type: str) -> Di
         elif content_type == "image":
             return verify_image_task(url_or_text)
         elif content_type == "video":
-            return verify_video_task(url_or_text
+            return verify_video_task(url_or_text)
         elif content_type == "text":
             return verify_text_task(url_or_text)
         else:
