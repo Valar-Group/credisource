@@ -1662,7 +1662,7 @@ def verify_video_file(video_data: bytes, filename: str) -> Dict:
 # AIORNOT DETECTION (Backup for Images/Videos)
 # ============================================================================
 
-def detect_with_aiornot(url_or_data, is_file: bool = False, is_video: bool = False) -> Optional[Dict]:
+    def detect_with_aiornot(url_or_data, is_file: bool = False, is_video: bool = False) -> Optional[Dict]:
     """AIorNOT API detection"""
     if not AIORNOT_API_KEY:
         print("⚠️ No AIorNOT API key")
@@ -1676,20 +1676,20 @@ def detect_with_aiornot(url_or_data, is_file: bool = False, is_video: bool = Fal
             if is_file:
                 import io
                 file_obj = io.BytesIO(url_or_data) if isinstance(url_or_data, bytes) else url_or_data
-    
+                
                 # Set correct filename and MIME type
-            if is_video:
-                 filename = "video.mp4"
-                mime_type = "video/mp4"
-            else:
-                filename = "image.jpg"
-                mime_type = "image/jpeg"
-    
-            response = client.post(
-                "https://api.aiornot.com/v1/reports/file",
-                headers={"Authorization": f"Bearer {AIORNOT_API_KEY}"},
-                files={"object": (filename, file_obj, mime_type)}
-            )
+                if is_video:
+                    filename = "video.mp4"
+                    mime_type = "video/mp4"
+                else:
+                    filename = "image.jpg"
+                    mime_type = "image/jpeg"
+                
+                response = client.post(
+                    "https://api.aiornot.com/v1/reports/file",
+                    headers={"Authorization": f"Bearer {AIORNOT_API_KEY}"},
+                    files={"object": (filename, file_obj, mime_type)}
+                )
             else:
                 response = client.post(
                     "https://api.aiornot.com/v1/reports/url",
