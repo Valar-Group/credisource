@@ -1967,7 +1967,41 @@ def verify_image_task(self, image_url: str) -> Dict:
             "label": "Error",
             "verdict": f"Verification failed: {str(e)}"
         }
+def download_video_with_ytdlp(video_url: str):
+    """
+    Download video using yt-dlp
+    Returns path to downloaded file, or None if failed
+    """
+    try:
+        import yt_dlp
+        import tempfile
+        
+        # Create temp file
+        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4')
+        output_path = temp_file.name
+        temp_file.close()
+        
+        ydl_opts = {
+            'format': 'best[ext=mp4]/best',
+            'outtmpl': output_path,
+            'quiet': True,
+            'no_warnings': True,
+        }
+        
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([video_url])
+        
+        if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+            return output_path
+        return None
+        
+    except Exception as e:
+        print(f"   yt-dlp error: {e}")
+        return None
 
+
+@app.task(bind=True)
+def verify_video_task(self, video_url: str) -> Dict:
 
 @app.task(bind=True)
 def verify_video_task(self, video_url: str) -> Dict:
