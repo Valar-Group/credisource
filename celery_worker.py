@@ -58,21 +58,60 @@ redis_client = redis.from_url(REDIS_URL)
 @app.task(name='credisource.verify_content', bind=True)
 def verify_content(self, job_id: str, url_or_text: str, content_type: str) -> Dict:
     """
-    Universal content verification task - routes to appropriate handler
-    This is what main.py calls from the API
+    Universal content verification task with SMART AUTO-DETECTION
+    Routes to appropriate handler and auto-corrects user mistakes
     
     BEGINNER NOTE: This is like a "traffic cop" that receives all requests
-    and sends them to the right verification function based on content_type
+    and sends them to the right verification function. It also detects when
+    users paste article URLs but select "image" and automatically corrects it.
     """
     print(f"\n{'='*80}")
     print(f"📥 RECEIVED VERIFICATION REQUEST")
     print(f"{'='*80}")
     print(f"Job ID: {job_id}")
-    print(f"Content Type: {content_type}")
+    print(f"Content Type (user selected): {content_type}")
     print(f"URL/Text: {url_or_text[:100]}...")
     print(f"{'='*80}\n")
     
     try:
+        # SMART AUTO-DETECTION: Fix common user mistakes
+        if content_type == "image":
+            # Check if URL ends with image extension
+            is_image_url = url_or_text.lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.svg'))
+            
+            if not is_image_url:
+                print("⚠️ AUTO-DETECT: User selected 'image' but URL doesn't have image extension")
+                print(f"   URL: {url_or_text[:100]}")
+                
+                # Check if it looks like a webpage/article
+                webpage_indicators = [
+                    '://' in url_or_text,  # Has protocol (http/https)
+                    '.com/' in url_or_text.lower(),
+                    '.org/' in url_or_text.lower(),
+                    '.net/' in url_or_text.lower(),
+                    '.tv/' in url_or_text.lower(),
+                    '.co.uk/' in url_or_text.lower(),
+                    'news' in url_or_text.lower(),
+                    'article' in url_or_text.lower(),
+                    'post' in url_or_text.lower(),
+                    'blog' in url_or_text.lower(),
+                ]
+                
+                if any(webpage_indicators):
+                    print("   ✅ AUTO-DETECTED: This looks like a news article/webpage")
+                    print("   📰 Routing to NEWS verification instead of image")
+                    print(f"{'='*80}\n")
+                    return verify_news(url_or_text)
+                else:
+                    # Not an image URL and doesn't look like news either
+                    return {
+                        "trust_score": 0,
+                        "label": "Invalid URL",
+                        "verdict": "⚠️ This doesn't appear to be a direct image URL. Please either: (1) Select 'News' if this is an article, (2) Right-click the image and select 'Copy Image Address', or (3) Upload the image file directly.",
+                        "error": "URL must end with .jpg, .png, .gif, etc. or be changed to 'News' type"
+                    }
+        
+        # Normal routing (no auto-correction needed)
         if content_type == "news":
             return verify_news(url_or_text)
         elif content_type == "image":
@@ -87,17 +126,6 @@ def verify_content(self, job_id: str, url_or_text: str, content_type: str) -> Di
                 "label": "Error",
                 "verdict": f"Unknown content type: {content_type}",
                 "error": f"Supported types: news, image, video, text"
-            }
-    except Exception as e:
-        print(f"❌ Verification failed: {e}")
-        import traceback
-        traceback.print_exc()
-        return {
-            "trust_score": 0,
-            "label": "Error",
-            "verdict": f"Verification failed: {str(e)}",
-            "error": str(e)
-        }
 
 
 @app.task(name='credisource.verify_content_file', bind=True)
