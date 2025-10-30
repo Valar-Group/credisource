@@ -126,7 +126,7 @@ def verify_content(self, job_id: str, url_or_text: str, content_type: str) -> Di
                 "label": "Error",
                 "verdict": f"Unknown content type: {content_type}",
                 "error": f"Supported types: news, image, video, text"
-
+            }
 
 @app.task(name='credisource.verify_content_file', bind=True)
 def verify_content_file(self, job_id: str, file_base64: str, filename: str, content_type: str) -> Dict:
