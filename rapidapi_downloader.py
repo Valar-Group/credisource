@@ -179,26 +179,47 @@ def extract_download_url(data: Dict, platform: str) -> Optional[str]:
     """
     Extract the actual video download URL from API response
     
-    The v3 API returns data in this structure:
-    {
-        "data": {
-            "formats": [
-                {"url": "...", "quality": "720p", ...}
-            ]
-        }
-    }
+    The v3 API returns data in various structures depending on platform
     """
     
     print(f"   📋 Parsing API response for {platform}...")
     
-    # v3 API format - look for formats array
+    # Check for 'contents' key (YouTube v3 API format)
+    if 'contents' in data:
+        contents = data['contents']
+        
+        # Contents might have formats or videos array
+        if isinstance(contents, dict):
+            # Look for formats
+            if 'formats' in contents and isinstance(contents['formats'], list):
+                formats = contents['formats']
+                if len(formats) > 0 and 'url' in formats[0]:
+                    print(f"   ✅ Found download URL in contents.formats[0]")
+                    return formats[0]['url']
+            
+            # Look for videos
+            if 'videos' in contents and isinstance(contents['videos'], list):
+                videos = contents['videos']
+                if len(videos) > 0 and 'url' in videos[0]:
+                    print(f"   ✅ Found download URL in contents.videos[0]")
+                    return videos[0]['url']
+            
+            # Check direct URL in contents
+            if 'url' in contents:
+                print(f"   ✅ Found download URL in contents.url")
+                return contents['url']
+            
+            # Log contents structure for debugging
+            print(f"   🔍 contents keys: {list(contents.keys())}")
+    
+    # v3 API format - look for formats array in data
     if 'data' in data and 'formats' in data['data']:
         formats = data['data']['formats']
         if isinstance(formats, list) and len(formats) > 0:
             # Get the first available format
             first_format = formats[0]
             if 'url' in first_format:
-                print(f"   ✅ Found download URL in formats array")
+                print(f"   ✅ Found download URL in data.formats[0]")
                 return first_format['url']
     
     # Fallback: Try common response patterns
@@ -231,14 +252,14 @@ def extract_download_url(data: Dict, platform: str) -> Optional[str]:
     if 'media' in data and isinstance(data['media'], list) and len(data['media']) > 0:
         media_url = data['media'][0].get('url')
         if media_url:
-            print(f"   ✅ Found download URL in media array")
+            print(f"   ✅ Found download URL in media[0]")
             return media_url
     
     # Check videos array  
     if 'videos' in data and isinstance(data['videos'], list) and len(data['videos']) > 0:
         video_url = data['videos'][0].get('url')
         if video_url:
-            print(f"   ✅ Found download URL in videos array")
+            print(f"   ✅ Found download URL in videos[0]")
             return video_url
     
     # If we can't find it, log the response structure
@@ -246,6 +267,8 @@ def extract_download_url(data: Dict, platform: str) -> Optional[str]:
     print(f"   Response keys: {list(data.keys())}")
     if 'data' in data:
         print(f"   data keys: {list(data['data'].keys())}")
+    if 'contents' in data and isinstance(data['contents'], dict):
+        print(f"   contents keys: {list(data['contents'].keys())}")
     
     return None
 
