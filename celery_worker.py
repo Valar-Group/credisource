@@ -1685,11 +1685,19 @@ def detect_with_aiornot(url_or_data, is_file: bool = False, is_video: bool = Fal
                     filename = "image.jpg"
                     mime_type = "image/jpeg"
                 
+                # Use v2 API with correct endpoint for each type
+                if is_video:
+                    endpoint = "https://api.aiornot.com/v2/video/sync"
+                    file_field = "video"
+                else:
+                    endpoint = "https://api.aiornot.com/v2/image/sync"
+                    file_field = "image"
+
                 response = client.post(
-                    "https://api.aiornot.com/v1/reports/file",
+                    endpoint,
                     headers={"Authorization": f"Bearer {AIORNOT_API_KEY}"},
-                    files={"object": (filename, file_obj, mime_type)}
-                )
+                    files={file_field: (filename, file_obj, mime_type)}
+                    )
             else:
                 response = client.post(
                     "https://api.aiornot.com/v1/reports/url",
