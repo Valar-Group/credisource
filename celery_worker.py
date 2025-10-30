@@ -2035,6 +2035,9 @@ def verify_video_task(self, video_url: str) -> Dict:
             print("\n📥 METHOD 2: Trying RapidAPI download...")
             
             # Import the RapidAPI downloader
+            import os
+            import sys
+            sys.path.insert(0, os.path.dirname(__file__))
             from rapidapi_downloader import download_with_rapidapi_sync
             
             result = download_with_rapidapi_sync(video_url, platform="auto")
