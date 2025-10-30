@@ -128,6 +128,17 @@ def verify_content(self, job_id: str, url_or_text: str, content_type: str) -> Di
                 "error": f"Supported types: news, image, video, text"
             }
 
+except Exception as e:
+        print(f"❌ Verification failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return {
+            "trust_score": 0,
+            "label": "Error",
+            "verdict": f"Verification failed: {str(e)}",
+            "error": str(e)
+        }
+
 @app.task(name='credisource.verify_content_file', bind=True)
 def verify_content_file(self, job_id: str, file_base64: str, filename: str, content_type: str) -> Dict:
     """
