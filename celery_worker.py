@@ -2090,7 +2090,7 @@ def verify_video_task(self, video_url: str) -> Dict:
             "error": str(e)
         }
     
-    finally:
+   finally:
         # Cleanup: Delete temporary video file
         if video_path and os.path.exists(video_path):
             try:
@@ -2098,7 +2098,9 @@ def verify_video_task(self, video_url: str) -> Dict:
                 print(f"🗑️ Cleaned up temp file: {video_path}")
             except:
                 pass
-        }
+
+
+@app.task(bind=True)
 
 
 @app.task(bind=True)
