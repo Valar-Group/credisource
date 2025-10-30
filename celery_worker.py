@@ -1676,12 +1676,20 @@ def detect_with_aiornot(url_or_data, is_file: bool = False, is_video: bool = Fal
             if is_file:
                 import io
                 file_obj = io.BytesIO(url_or_data) if isinstance(url_or_data, bytes) else url_or_data
-                
-                response = client.post(
-                    "https://api.aiornot.com/v1/reports/file",
-                    headers={"Authorization": f"Bearer {AIORNOT_API_KEY}"},
-                    files={"object": ("file", file_obj, f"{content_type}/jpeg")}
-                )
+    
+                # Set correct filename and MIME type
+            if is_video:
+                 filename = "video.mp4"
+                mime_type = "video/mp4"
+            else:
+                filename = "image.jpg"
+                mime_type = "image/jpeg"
+    
+            response = client.post(
+                "https://api.aiornot.com/v1/reports/file",
+                headers={"Authorization": f"Bearer {AIORNOT_API_KEY}"},
+                files={"object": (filename, file_obj, mime_type)}
+            )
             else:
                 response = client.post(
                     "https://api.aiornot.com/v1/reports/url",
