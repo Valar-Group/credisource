@@ -184,6 +184,13 @@ def extract_download_url(data: Dict, platform: str) -> Optional[str]:
     """
     
     print(f"   📋 Parsing API response for {platform}...")
+    # Debug: Show response structure
+    print(f"   🔍 Response type: {type(data)}")
+    print(f"   🔍 Response keys: {list(data.keys())}")
+    if 'contents' in data:
+        print(f"   🔍 contents type: {type(data['contents'])}")
+        print(f"   🔍 contents value (first 200 chars): {str(data['contents'])[:200]}")
+
     
     # Check for 'contents' key (YouTube v3 API format)
     if 'contents' in data:
