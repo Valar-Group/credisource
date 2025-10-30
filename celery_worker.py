@@ -117,7 +117,7 @@ def verify_content(self, job_id: str, url_or_text: str, content_type: str) -> Di
         elif content_type == "image":
             return verify_image_task(url_or_text)
         elif content_type == "video":
-            return verify_video_task(url_or_text)
+            return _task(url_or_text)
         elif content_type == "text":
             return verify_text_task(url_or_text)
         else:
@@ -1972,44 +1972,132 @@ def verify_image_task(self, image_url: str) -> Dict:
 @app.task(bind=True)
 def verify_video_task(self, video_url: str) -> Dict:
     """
-    Complete video AI detection
-    Uses: AIorNOT (primary - supports video)
+    Video verification with RapidAPI fallback for blocked platforms
+    
+    Flow:
+    1. Try yt-dlp first (works for TikTok, Reddit, Vimeo, Twitter)
+    2. If yt-dlp fails, try RapidAPI (works for YouTube, Instagram, Facebook)
+    3. Send downloaded file to AIorNOT for AI detection
     """
-    print(f"🎥 Video verification started: {video_url}")
+    
+    print(f"\n{'='*80}")
+    print(f"🎥 VIDEO VERIFICATION STARTED")
+    print(f"{'='*80}")
+    print(f"URL: {video_url}")
+    print(f"")
+    
+    video_path = None
+    download_method = None
     
     try:
-        # Try AIorNOT (supports video)
-        aiornot_result = detect_with_aiornot(video_url, is_file=False, is_video=True)
+        # STEP 1: Try yt-dlp first (fast, free, works for many platforms)
+        print("📥 METHOD 1: Trying yt-dlp download...")
+        video_path = download_video_with_ytdlp(video_url)
         
-        if not aiornot_result:
+        if video_path and os.path.exists(video_path):
+            print(f"✅ yt-dlp succeeded!")
+            download_method = "yt-dlp"
+        else:
+            print("⚠️ yt-dlp failed or blocked")
+            
+            # STEP 2: Fallback to RapidAPI
+            print("\n📥 METHOD 2: Trying RapidAPI download...")
+            
+            # Import the RapidAPI downloader
+            from rapidapi_downloader import download_with_rapidapi_sync
+            
+            result = download_with_rapidapi_sync(video_url, platform="auto")
+            
+            if result.get("success"):
+                video_path = result.get("video_path")
+                download_method = f"RapidAPI ({result.get('platform')})"
+                print(f"✅ RapidAPI succeeded!")
+            else:
+                print(f"❌ RapidAPI also failed: {result.get('error')}")
+                
+                # Both methods failed
+                return {
+                    "trust_score": 0,
+                    "label": "Download Failed",
+                    "verdict": f"Could not download video. Platform may be blocked or require authentication. Error: {result.get('error')}",
+                    "error": "Both yt-dlp and RapidAPI failed"
+                }
+        
+        # STEP 3: Verify the downloaded video file exists
+        if not video_path or not os.path.exists(video_path):
             return {
-                "trust_score": 50,
-                "label": "Unavailable",
-                "verdict": "Video AI detection unavailable (AIorNOT required)"
+                "trust_score": 0,
+                "label": "Error",
+                "verdict": "Video download failed",
+                "error": "No video file available"
             }
         
-        ai_confidence = aiornot_result["ai_confidence"]
-        trust_score = int((1 - ai_confidence) * 100)
+        print(f"\n🔍 Analyzing downloaded video...")
+        print(f"   Downloaded via: {download_method}")
+        print(f"   File: {video_path}")
+        print(f"   Size: {os.path.getsize(video_path)} bytes")
         
-        label_info = get_detection_label(trust_score)
+        # STEP 4: Send video FILE to AIorNOT for AI detection
+        print(f"\n🤖 Calling AIorNOT API with video file...")
         
-        print(f"📊 Final score: {trust_score}/100 ({label_info['label']})")
+        # Read the video file
+        with open(video_path, 'rb') as f:
+            video_data = f.read()
         
-        return {
-            "trust_score": trust_score,
-            "label": label_info["label"],
-            "verdict": label_info["explanation"],
-            "confidence": label_info["confidence"],
-            "provider": aiornot_result["provider"]
-        }
+        # Call AIorNOT with the file
+        aiornot_result = detect_with_aiornot(video_data, is_file=True, is_video=True)
         
+        if aiornot_result:
+            ai_confidence = aiornot_result["ai_confidence"]
+            trust_score = int((1 - ai_confidence) * 100)
+            
+            label_info = get_detection_label(trust_score)
+            
+            print(f"\n📊 FINAL TRUST SCORE: {trust_score}/100")
+            print(f"   Label: {label_info['label']}")
+            print(f"   Downloaded via: {download_method}")
+            print(f"{'='*80}\n")
+            
+            return {
+                "trust_score": trust_score,
+                "label": label_info["label"],
+                "verdict": label_info["explanation"],
+                "confidence": label_info["confidence"],
+                "provider": aiornot_result["provider"],
+                "download_method": download_method
+            }
+        else:
+            # AIorNOT failed
+            print(f"⚠️ AIorNOT detection unavailable")
+            return {
+                "trust_score": 50,
+                "label": "Detection Unavailable",
+                "verdict": "Video downloaded successfully but AI detection service unavailable. Please try again later.",
+                "download_method": download_method
+            }
+    
     except Exception as e:
-        print(f"❌ Video verification error: {str(e)}")
+        print(f"\n❌ VIDEO VERIFICATION ERROR")
+        print(f"Error: {e}")
+        import traceback
         traceback.print_exc()
+        print(f"{'='*80}\n")
+        
         return {
-            "trust_score": 50,
+            "trust_score": 0,
             "label": "Error",
-            "verdict": f"Verification failed: {str(e)}"
+            "verdict": f"Video verification failed: {str(e)}",
+            "error": str(e)
+        }
+    
+    finally:
+        # Cleanup: Delete temporary video file
+        if video_path and os.path.exists(video_path):
+            try:
+                os.remove(video_path)
+                print(f"🗑️ Cleaned up temp file: {video_path}")
+            except:
+                pass
         }
 
 
