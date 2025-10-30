@@ -2002,9 +2002,6 @@ def download_video_with_ytdlp(video_url: str):
 
 @app.task(bind=True)
 def verify_video_task(self, video_url: str) -> Dict:
-
-@app.task(bind=True)
-def verify_video_task(self, video_url: str) -> Dict:
     """
     Video verification with RapidAPI fallback for blocked platforms
     
