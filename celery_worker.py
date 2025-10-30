@@ -128,7 +128,7 @@ def verify_content(self, job_id: str, url_or_text: str, content_type: str) -> Di
                 "error": f"Supported types: news, image, video, text"
             }
 
-except Exception as e:
+    except Exception as e:
         print(f"❌ Verification failed: {e}")
         import traceback
         traceback.print_exc()
