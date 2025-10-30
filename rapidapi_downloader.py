@@ -2,6 +2,7 @@
 RapidAPI Social Media Video Downloader Integration
 Handles downloads from YouTube, Instagram, Facebook, TikTok, etc.
 """
+print("🔄 RAPIDAPI DOWNLOADER MODULE LOADED - VERSION 2.0") 
 
 import os
 import httpx
