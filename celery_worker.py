@@ -1662,7 +1662,7 @@ def verify_video_file(video_data: bytes, filename: str) -> Dict:
 # AIORNOT DETECTION (Backup for Images/Videos)
 # ============================================================================
 
-    def detect_with_aiornot(url_or_data, is_file: bool = False, is_video: bool = False) -> Optional[Dict]:
+def detect_with_aiornot(url_or_data, is_file: bool = False, is_video: bool = False) -> Optional[Dict]:
     """AIorNOT API detection"""
     if not AIORNOT_API_KEY:
         print("⚠️ No AIorNOT API key")
