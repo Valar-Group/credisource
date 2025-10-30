@@ -2,7 +2,7 @@
 RapidAPI Social Media Video Downloader Integration
 Handles downloads from YouTube, Instagram, Facebook, TikTok, etc.
 """
-print("🔄 RAPIDAPI DOWNLOADER MODULE LOADED - VERSION 2.0") 
+print("🔄 RAPIDAPI DOWNLOADER MODULE LOADED - VERSION 3.0") 
 
 import os
 import httpx
@@ -184,20 +184,31 @@ def extract_download_url(data: Dict, platform: str) -> Optional[str]:
     """
     
     print(f"   📋 Parsing API response for {platform}...")
-    # Debug: Show response structure
-    print(f"   🔍 Response type: {type(data)}")
-    print(f"   🔍 Response keys: {list(data.keys())}")
-    if 'contents' in data:
-        print(f"   🔍 contents type: {type(data['contents'])}")
-        print(f"   🔍 contents value (first 200 chars): {str(data['contents'])[:200]}")
-
     
     # Check for 'contents' key (YouTube v3 API format)
     if 'contents' in data:
         contents = data['contents']
         
-        # Contents might have formats or videos array
-        if isinstance(contents, dict):
+        # Contents is a LIST (YouTube format)
+        if isinstance(contents, list) and len(contents) > 0:
+            first_content = contents[0]
+            
+            # Look for videos array
+            if 'videos' in first_content and isinstance(first_content['videos'], list):
+                videos = first_content['videos']
+                if len(videos) > 0 and 'url' in videos[0]:
+                    print(f"   ✅ Found download URL in contents[0].videos[0]")
+                    return videos[0]['url']
+            
+            # Look for formats array
+            if 'formats' in first_content and isinstance(first_content['formats'], list):
+                formats = first_content['formats']
+                if len(formats) > 0 and 'url' in formats[0]:
+                    print(f"   ✅ Found download URL in contents[0].formats[0]")
+                    return formats[0]['url']
+        
+        # Contents is a DICT (other platforms)
+        elif isinstance(contents, dict):
             # Look for formats
             if 'formats' in contents and isinstance(contents['formats'], list):
                 formats = contents['formats']
@@ -216,15 +227,11 @@ def extract_download_url(data: Dict, platform: str) -> Optional[str]:
             if 'url' in contents:
                 print(f"   ✅ Found download URL in contents.url")
                 return contents['url']
-            
-            # Log contents structure for debugging
-            print(f"   🔍 contents keys: {list(contents.keys())}")
     
     # v3 API format - look for formats array in data
     if 'data' in data and 'formats' in data['data']:
         formats = data['data']['formats']
         if isinstance(formats, list) and len(formats) > 0:
-            # Get the first available format
             first_format = formats[0]
             if 'url' in first_format:
                 print(f"   ✅ Found download URL in data.formats[0]")
@@ -275,8 +282,11 @@ def extract_download_url(data: Dict, platform: str) -> Optional[str]:
     print(f"   Response keys: {list(data.keys())}")
     if 'data' in data:
         print(f"   data keys: {list(data['data'].keys())}")
-    if 'contents' in data and isinstance(data['contents'], dict):
-        print(f"   contents keys: {list(data['contents'].keys())}")
+    if 'contents' in data:
+        if isinstance(data['contents'], dict):
+            print(f"   contents keys: {list(data['contents'].keys())}")
+        elif isinstance(data['contents'], list) and len(data['contents']) > 0:
+            print(f"   contents[0] keys: {list(data['contents'][0].keys())}")
     
     return None
 
