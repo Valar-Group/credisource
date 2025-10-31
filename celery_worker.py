@@ -1878,13 +1878,17 @@ def detect_text_winston(text_content: str) -> Optional[Dict]:
         
         with httpx.Client(timeout=30.0) as client:
             response = client.post(
-                "https://api.gowinston.ai/v2/plagiarism",
+                "https://api.gowinston.ai/v2/predict",
                 headers={
                     "Authorization": f"Bearer {WINSTON_API_KEY}",
                     "Content-Type": "application/json"
                 },
-                json={"text": text_content[:10000], "language": "en"}
-            )
+                json={
+                    "text": text_content[:10000],
+                    "language": "en",
+                    "sentences": True,
+                    "version": "latest"
+                }
             
             if response.status_code != 200:
                 print(f"⚠️ Winston error: {response.status_code}")
