@@ -76,9 +76,10 @@ def verify_content(self, job_id: str, url_or_text: str, content_type: str) -> Di
     try:
         # SMART AUTO-DETECTION: Fix common user mistakes
         if content_type == "image":
-            # Check if URL ends with image extension
-            is_image_url = url_or_text.lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.svg'))
-            
+            # Check if URL ends with image extension (strip query params first)
+            url_without_params = url_or_text.split('?')[0].split('#')[0]
+            is_image_url = url_without_params.lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.svg'))
+
             if not is_image_url:
                 print("⚠️ AUTO-DETECT: User selected 'image' but URL doesn't have image extension")
                 print(f"   URL: {url_or_text[:100]}")
