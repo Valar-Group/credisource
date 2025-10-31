@@ -1878,7 +1878,7 @@ def detect_text_winston(text_content: str) -> Optional[Dict]:
         
         with httpx.Client(timeout=30.0) as client:
             response = client.post(
-                "https://api.gowinston.ai/v2/predict",
+                "https://api.gowinston.ai/v2/ai-content-detection",
                 headers={
                     "Authorization": f"Bearer {WINSTON_API_KEY}",
                     "Content-Type": "application/json"
