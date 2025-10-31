@@ -1436,6 +1436,62 @@ def get_detection_label(score: int) -> Dict:
             "confidence": "High"
         }
 
+def calculate_ensemble_score(results: list, media_type: str = "image") -> dict:
+    """
+    WEIGHTED ENSEMBLE ALGORITHM
+    Gives better detectors more influence in final score
+    
+    Weights:
+    - SightEngine: 40% (best for images)
+    - AIorNOT: 35% (good backup)
+    - Hugging Face: 25% (fallback only)
+    """
+    if not results:
+        return {
+            "weighted_confidence": 0.5,
+            "trust_score": 50,
+            "detectors_used": 0,
+            "providers": []
+        }
+    
+    # Define weights based on detector quality
+    weights = {
+        'SightEngine': 0.40,
+        'AIorNOT': 0.35,
+        'Hugging Face': 0.25,
+        'RoBERTa (Backup)': 0.25
+    }
+    
+    # Calculate weighted average
+    total_weight = 0
+    weighted_sum = 0
+    providers_used = []
+    
+    for result in results:
+        provider = result.get("provider", "Unknown")
+        ai_confidence = result.get("ai_confidence", 0.5)
+        weight = weights.get(provider, 1.0 / len(results))
+        
+        weighted_sum += ai_confidence * weight
+        total_weight += weight
+        providers_used.append(provider)
+    
+    # Normalize by total weight
+    weighted_confidence = weighted_sum / total_weight if total_weight > 0 else 0.5
+    
+    # Apply amplification (uses existing function)
+    amplified_confidence = amplify_confidence(weighted_confidence)
+    
+    # Convert to trust score (0-100)
+    trust_score = int((1 - amplified_confidence) * 100)
+    
+    return {
+        "weighted_confidence": round(weighted_confidence, 3),
+        "amplified_confidence": round(amplified_confidence, 3),
+        "trust_score": trust_score,
+        "detectors_used": len(results),
+        "providers": providers_used
+    }
 
 # ============================================================================
 # SIGHTENGINE DETECTION (Primary for Images)
@@ -1598,12 +1654,20 @@ def verify_image_file(image_data: bytes, filename: str) -> Dict:
                 "verdict": "AI detection services unavailable"
             }
         
-        # Calculate score
-        avg_confidence = sum(r["ai_confidence"] for r in results) / len(results)
-        amplified_confidence = amplify_confidence(avg_confidence)
-        trust_score = int((1 - amplified_confidence) * 100)
+        # Calculate WEIGHTED ensemble score
+        ensemble = calculate_ensemble_score(results, media_type="image")
+        trust_score = ensemble["trust_score"]
         
         label_info = get_detection_label(trust_score)
+        
+        return {
+            "trust_score": trust_score,
+            "label": label_info["label"],
+            "verdict": label_info["explanation"],
+            "confidence": label_info["confidence"],
+            "detectors_used": ensemble["detectors_used"],
+            "providers": ensemble["providers"]
+        }
         
         return {
             "trust_score": trust_score,
@@ -1957,14 +2021,22 @@ def verify_image_task(self, image_url: str) -> Dict:
                 "verdict": "AI detection services unavailable"
             }
         
-        # Calculate ensemble score
-        avg_confidence = sum(r["ai_confidence"] for r in results) / len(results)
-        amplified_confidence = amplify_confidence(avg_confidence)
-        trust_score = int((1 - amplified_confidence) * 100)
+        # Calculate WEIGHTED ensemble score
+        ensemble = calculate_ensemble_score(results, media_type="image")
+        trust_score = ensemble["trust_score"]
         
         label_info = get_detection_label(trust_score)
         
         print(f"📊 Final score: {trust_score}/100 ({label_info['label']})")
+        
+        return {
+            "trust_score": trust_score,
+            "label": label_info["label"],
+            "verdict": label_info["explanation"],
+            "confidence": label_info["confidence"],
+            "detectors_used": ensemble["detectors_used"],
+            "providers": ensemble["providers"]
+        }
         
         return {
             "trust_score": trust_score,
