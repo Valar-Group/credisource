@@ -1889,7 +1889,8 @@ def detect_text_winston(text_content: str) -> Optional[Dict]:
                     "sentences": True,
                     "version": "latest"
                 }
-            
+            )
+                
             if response.status_code != 200:
                 print(f"⚠️ Winston error: {response.status_code}")
                 return None
